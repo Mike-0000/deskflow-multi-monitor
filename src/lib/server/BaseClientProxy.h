@@ -8,6 +8,9 @@
 #pragma once
 
 #include "deskflow/IClient.h"
+#include "server/DisplayLayout.h"
+
+#include <vector>
 
 namespace deskflow {
 class IStream;
@@ -50,6 +53,9 @@ public:
   {
     return false;
   }
+
+  //! Get per-monitor layout reported by the client (protocol 1.9+).
+  virtual const std::vector<deskflow::server::DisplayRect> &getReportedDisplays() const;
 
   //@}
 

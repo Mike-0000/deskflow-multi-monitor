@@ -252,6 +252,38 @@ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config)
 
   outStream << "end" << Qt::endl << Qt::endl;
 
+  if (!config.workspaceLayout().m_machines.empty()) {
+    outStream << "section: display_layouts" << Qt::endl;
+    outStream << "\tadvancedLayout = " << (config.hasAdvancedLayout() ? "true" : "false") << Qt::endl;
+    for (const auto &machine : config.workspaceLayout().m_machines) {
+      outStream << "\t" << QString::fromStdString(machine.m_name) << ":" << Qt::endl;
+      for (const auto &monitor : machine.m_monitors) {
+        const QString monitorId =
+            QString::fromStdString(monitor.m_id.empty() ? monitor.m_name : monitor.m_id);
+        outStream << "\t\t" << monitorId << ":" << Qt::endl;
+        if (!monitor.m_id.empty()) {
+          outStream << "\t\t\tid = " << QString::fromStdString(monitor.m_id) << Qt::endl;
+        }
+        if (!monitor.m_name.empty()) {
+          outStream << "\t\t\tname = " << QString::fromStdString(monitor.m_name) << Qt::endl;
+        }
+        outStream << "\t\t\tworldX = " << monitor.m_worldX << Qt::endl;
+        outStream << "\t\t\tworldY = " << monitor.m_worldY << Qt::endl;
+        outStream << "\t\t\twidth = " << monitor.m_width << Qt::endl;
+        outStream << "\t\t\theight = " << monitor.m_height << Qt::endl;
+        outStream << "\t\t\tlocalX = " << monitor.m_localX << Qt::endl;
+        outStream << "\t\t\tlocalY = " << monitor.m_localY << Qt::endl;
+        if (monitor.m_scale != 1.0f) {
+          outStream << "\t\t\tscale = " << monitor.m_scale << Qt::endl;
+        }
+        if (monitor.m_dpi != 96) {
+          outStream << "\t\t\tdpi = " << monitor.m_dpi << Qt::endl;
+        }
+      }
+    }
+    outStream << "end" << Qt::endl << Qt::endl;
+  }
+
   outStream << "section: options" << Qt::endl;
 
   if (config.hasHeartbeat())

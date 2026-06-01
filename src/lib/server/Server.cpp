@@ -23,6 +23,7 @@
 #include "server/ClientListener.h"
 #include "server/ClientProxy.h"
 #include "server/ClientProxyUnknown.h"
+#include "server/DisplayLayout.h"
 #include "server/PrimaryClient.h"
 
 #ifdef _WIN32
@@ -714,6 +715,218 @@ BaseClientProxy *Server::mapToNeighbor(BaseClientProxy *src, Direction srcSide, 
   avoidJumpZone(dst, srcSide, x, y);
 
   return dst;
+}
+
+BaseClientProxy *Server::findClientByName(const std::string &name) const
+{
+  const std::string canonical = m_config->getCanonicalName(name);
+  if (canonical.empty()) {
+    return nullptr;
+  }
+
+  if (getName(m_primaryClient) == canonical || m_primaryClient->getName() == canonical) {
+    return m_primaryClient;
+  }
+
+  ClientList::const_iterator index = m_clients.find(canonical);
+  if (index != m_clients.end()) {
+    return index->second;
+  }
+
+  return nullptr;
+}
+
+BaseClientProxy *Server::mapToNeighborAdvanced(BaseClientProxy *src, Direction srcSide, int32_t &x, int32_t &y) const
+{
+  assert(src != nullptr);
+
+  if (!m_config->hasAdvancedLayout()) {
+    return nullptr;
+  }
+
+  GeometryRouter router(m_config->getWorkspaceLayout());
+  const auto transition = router.findTransition(getName(src), x, y, srcSide);
+  if (!transition.has_value() || !transition->m_valid) {
+    return nullptr;
+  }
+
+  BaseClientProxy *dst = findClientByName(transition->m_dstMachine);
+  if (dst == nullptr) {
+    return nullptr;
+  }
+
+  x = transition->m_dstX;
+  y = transition->m_dstY;
+  avoidJumpZone(dst, srcSide, x, y);
+  return dst;
+}
+
+bool Server::onMouseMovePrimaryAdvanced(int32_t x, int32_t y)
+{
+  if (m_active != m_primaryClient) {
+    return false;
+  }
+
+  m_xDelta2 = m_xDelta;
+  m_yDelta2 = m_yDelta;
+  m_xDelta = x - m_x;
+  m_yDelta = y - m_y;
+  m_x = x;
+  m_y = y;
+
+  const std::string machineName = getName(m_active);
+  const MachineLayout *machine = m_config->getWorkspaceLayout().findMachine(machineName);
+  if (machine == nullptr) {
+    noSwitch(x, y);
+    return false;
+  }
+
+  const DisplayRect *monitor = machine->findMonitorAtLocal(x, y);
+  if (monitor == nullptr) {
+    noSwitch(x, y);
+    return false;
+  }
+
+  const int32_t zoneSize = getJumpZoneSize(m_active);
+  const int32_t left = monitor->m_localX;
+  const int32_t right = monitor->m_localX + monitor->m_width - 1;
+  const int32_t top = monitor->m_localY;
+  const int32_t bottom = monitor->m_localY + monitor->m_height - 1;
+
+  int32_t xc = x;
+  int32_t yc = y;
+  if (xc < left + zoneSize) {
+    xc = left;
+  } else if (xc >= right - zoneSize + 1) {
+    xc = right;
+  }
+  if (yc < top + zoneSize) {
+    yc = top;
+  } else if (yc >= bottom - zoneSize + 1) {
+    yc = bottom;
+  }
+
+  using enum Direction;
+  auto dirh = NoDirection;
+  auto dirv = NoDirection;
+  int32_t xh = x;
+  int32_t yv = y;
+  if (x <= left + zoneSize) {
+    xh -= zoneSize;
+    dirh = Left;
+  } else if (x >= right - zoneSize) {
+    xh += zoneSize;
+    dirh = Right;
+  }
+  if (y <= top + zoneSize) {
+    yv -= zoneSize;
+    dirv = Top;
+  } else if (y >= bottom - zoneSize) {
+    yv += zoneSize;
+    dirv = Bottom;
+  }
+
+  if (dirh == NoDirection && dirv == NoDirection) {
+    noSwitch(x, y);
+    return false;
+  }
+
+  std::array<Direction, 2> dirs = {dirh, dirv};
+  std::array<int32_t, 2> xs = {xh, x};
+  std::array<int32_t, 2> ys = {y, yv};
+  for (int i = 0; i < 2; ++i) {
+    Direction dir = dirs.at(i);
+    if (dir == NoDirection) {
+      continue;
+    }
+    x = xs.at(i);
+    y = ys.at(i);
+    BaseClientProxy *newScreen = mapToNeighborAdvanced(m_active, dir, x, y);
+    if (isSwitchOkay(newScreen, dir, x, y, xc, yc)) {
+      switchScreen(newScreen, x, y, false);
+      return true;
+    }
+  }
+
+  noSwitch(x, y);
+  return false;
+}
+
+void Server::onMouseMoveSecondaryAdvanced(int32_t dx, int32_t dy)
+{
+  assert(m_active != nullptr);
+  if (m_active == m_primaryClient) {
+    return;
+  }
+
+  if (m_relativeMoves && isLockedToScreenServer()) {
+    m_active->mouseRelativeMove(dx, dy);
+    return;
+  }
+
+  const std::string machineName = getName(m_active);
+  const MachineLayout *machine = m_config->getWorkspaceLayout().findMachine(machineName);
+  if (machine == nullptr) {
+    onMouseMoveSecondaryLegacy(dx, dy);
+    return;
+  }
+
+  const int32_t xOld = m_x;
+  const int32_t yOld = m_y;
+  m_xDelta2 = m_xDelta;
+  m_yDelta2 = m_yDelta;
+  m_xDelta = dx;
+  m_yDelta = dy;
+  m_x += dx;
+  m_y += dy;
+
+  const DisplayRect *monitor = machine->findMonitorAtLocal(m_x, m_y);
+  if (monitor == nullptr) {
+    monitor = GeometryRouter::findMonitorAtLocal(*machine, xOld, yOld);
+  }
+  if (monitor == nullptr) {
+    m_x = xOld;
+    m_y = yOld;
+    onMouseMoveSecondaryLegacy(dx, dy);
+    return;
+  }
+
+  int32_t xc = m_x;
+  int32_t yc = m_y;
+  GeometryRouter::clampToMonitor(*monitor, xc, yc);
+
+  using enum Direction;
+  Direction dir = NoDirection;
+  if (m_x < monitor->m_localX) {
+    dir = Left;
+  } else if (m_x > monitor->m_localX + monitor->m_width - 1) {
+    dir = Right;
+  } else if (m_y < monitor->m_localY) {
+    dir = Top;
+  } else if (m_y > monitor->m_localY + monitor->m_height - 1) {
+    dir = Bottom;
+  } else {
+    noSwitch(m_x, m_y);
+    if (m_x != xOld || m_y != yOld) {
+      m_active->mouseMove(m_x, m_y);
+    }
+    return;
+  }
+
+  int32_t newX = m_x;
+  int32_t newY = m_y;
+  BaseClientProxy *newScreen = mapToNeighborAdvanced(m_active, dir, newX, newY);
+  if (newScreen != nullptr && isSwitchOkay(newScreen, dir, newX, newY, xc, yc)) {
+    switchScreen(newScreen, newX, newY, false);
+    return;
+  }
+
+  m_x = xOld + dx;
+  m_y = yOld + dy;
+  GeometryRouter::clampToMonitor(*monitor, m_x, m_y);
+  if (m_x != xOld || m_y != yOld) {
+    m_active->mouseMove(m_x, m_y);
+  }
 }
 
 void Server::avoidJumpZone(const BaseClientProxy *dst, Direction dir, int32_t &x, int32_t &y) const
@@ -1619,6 +1832,10 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
 {
   LOG_VERBOSE("onMouseMovePrimary %d,%d", x, y);
 
+  if (m_config->hasAdvancedLayout()) {
+    return onMouseMovePrimaryAdvanced(x, y);
+  }
+
   // mouse move on primary (server's) screen
   if (m_active != m_primaryClient) {
     // stale event -- we're actually on a secondary screen
@@ -1716,6 +1933,16 @@ void Server::onMouseMoveSecondary(int32_t dx, int32_t dy)
 {
   LOG_VERBOSE("mouse move on secondary: %+d,%+d", dx, dy);
 
+  if (m_config->hasAdvancedLayout()) {
+    onMouseMoveSecondaryAdvanced(dx, dy);
+    return;
+  }
+
+  onMouseMoveSecondaryLegacy(dx, dy);
+}
+
+void Server::onMouseMoveSecondaryLegacy(int32_t dx, int32_t dy)
+{
   // TODO: move this to client side and use a qt setting or cli arg instead of env var.
   const static auto adjustEnv = "DESKFLOW_MOUSE_ADJUSTMENT";
   if (const char *envVal = std::getenv(adjustEnv); envVal) {

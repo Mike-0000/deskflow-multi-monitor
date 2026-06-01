@@ -456,6 +456,26 @@ bool EiScreen::isPrimary() const
   return m_isPrimary;
 }
 
+PlatformDisplayList EiScreen::enumerateDisplays() const
+{
+  PlatformDisplayList displays;
+  for (auto it = m_eiDevices.begin(); it != m_eiDevices.end(); ++it) {
+    auto idx = 0;
+    struct ei_region *r;
+    while ((r = ei_device_get_region(*it, idx++)) != nullptr) {
+      PlatformDisplayInfo display;
+      display.m_id = ei_device_get_name(*it);
+      display.m_name = display.m_id;
+      display.m_x = static_cast<int32_t>(ei_region_get_x(r));
+      display.m_y = static_cast<int32_t>(ei_region_get_y(r));
+      display.m_width = static_cast<int32_t>(ei_region_get_width(r));
+      display.m_height = static_cast<int32_t>(ei_region_get_height(r));
+      displays.push_back(display);
+    }
+  }
+  return displays;
+}
+
 void EiScreen::updateShape()
 {
   m_w = 1;

@@ -75,15 +75,16 @@ public:
   void screensaver(bool activate) override;
   void resetOptions() override;
   void setOptions(const OptionsList &options) override;
-  void setSequenceNumber(std::uint32_t) override;
+  void setSequenceNumber(uint32_t) override;
   bool isPrimary() const override;
+  PlatformDisplayList enumerateDisplays() const override;
+  std::string getSecureInputApp() const override;
 
 protected:
   // IPlatformScreen overrides
   void handleSystemEvent(const Event &event) override;
   void updateButtons() override;
   IKeyState *getKeyState() const override;
-  std::string getSecureInputApp() const override;
 
   void updateShape();
   void addDevice(ei_device *device);

@@ -77,6 +77,7 @@ public:
   void setOptions(const OptionsList &options) override = 0;
   void setSequenceNumber(uint32_t) override = 0;
   bool isPrimary() const override = 0;
+  PlatformDisplayList enumerateDisplays() const override = 0;
 
 protected:
   //! Update mouse buttons

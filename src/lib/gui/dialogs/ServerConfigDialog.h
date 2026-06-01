@@ -10,6 +10,7 @@
 
 #include "ScreenSetupModel.h"
 #include "config/ServerConfig.h"
+#include "widgets/AdvancedLayoutWidget.h"
 
 #include <QDialog>
 
@@ -103,6 +104,7 @@ private:
   QString m_originalServerConfigUsesExternalFile;
   ServerConfig m_serverConfig;
   ScreenSetupModel m_screenSetupModel;
+  AdvancedLayoutWidget *m_advancedLayoutWidget = nullptr;
 
 private Q_SLOTS:
   void onChange();

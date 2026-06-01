@@ -136,6 +136,21 @@ p, li { white-space: pre-wrap; }
     </message>
 </context>
 <context>
+    <name>AdvancedLayoutWidget</name>
+    <message>
+        <source>Enable advanced monitor layout</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Machine:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Import Local Displays</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>ClientConfigDialog</name>
     <message>
         <source>Client Configuration</source>
@@ -1107,6 +1122,10 @@ Al habilitar esta opción, se deshabilitará la interfaz gráfica de usuario (GU
     <message>
         <source>Config file path</source>
         <translation type="unfinished">Ruta del archivo de configuración</translation>
+    </message>
+    <message>
+        <source>Advanced Layout</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>%1 Configurations (*.conf);;All files (*.*)</source>

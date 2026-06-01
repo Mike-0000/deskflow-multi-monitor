@@ -421,6 +421,38 @@ bool XWindowsScreen::isPrimary() const
   return m_isPrimary;
 }
 
+PlatformDisplayList XWindowsScreen::enumerateDisplays() const
+{
+  PlatformDisplayList displays;
+#if HAVE_X11_EXTENSIONS_XINERAMA_H
+  if ((XineramaQueryExtension(m_display, nullptr, nullptr) != 0) && (XineramaIsActive(m_display) != 0)) {
+    int numScreens = 0;
+    XineramaScreenInfo *screens = XineramaQueryScreens(m_display, &numScreens);
+    if (screens != nullptr) {
+      for (int i = 0; i < numScreens; ++i) {
+        PlatformDisplayInfo display;
+        display.m_id = std::to_string(i);
+        display.m_name = display.m_id;
+        display.m_x = screens[i].x_org;
+        display.m_y = screens[i].y_org;
+        display.m_width = screens[i].width;
+        display.m_height = screens[i].height;
+        displays.push_back(display);
+      }
+      XFree(screens);
+    }
+  }
+#endif
+  if (displays.empty()) {
+    PlatformDisplayInfo display;
+    display.m_id = "0";
+    display.m_name = "primary";
+    getShape(display.m_x, display.m_y, display.m_width, display.m_height);
+    displays.push_back(display);
+  }
+  return displays;
+}
+
 std::string XWindowsScreen::getSecureInputApp() const
 {
   // ignore on Linux

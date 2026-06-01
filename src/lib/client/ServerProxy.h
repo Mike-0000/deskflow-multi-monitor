@@ -33,7 +33,7 @@ public:
   Process messages from the server on \p stream and forward to
   \p client.
   */
-  ServerProxy(Client *client, deskflow::IStream *stream, IEventQueue *events);
+  ServerProxy(Client *client, deskflow::IStream *stream, IEventQueue *events, int16_t serverProtocolMinor = 0);
   ServerProxy(ServerProxy const &) = delete;
   ServerProxy(ServerProxy &&) = delete;
   ~ServerProxy();
@@ -65,6 +65,7 @@ private:
   void flushCompressedMouse();
 
   void sendInfo(const ClientInfo &);
+  void sendDisplayInfo();
 
   void resetKeepAliveAlarm();
   void setKeepAliveRate(double);
@@ -123,6 +124,7 @@ private:
 
   MessageParser m_parser = &ServerProxy::parseHandshakeMessage;
   IEventQueue *m_events = nullptr;
+  int16_t m_serverProtocolMinor = 0;
   std::string m_serverLayout = "";
   bool m_isUserNotifiedAboutLayoutSyncError = false;
   deskflow::KeyboardLayoutManager m_layoutManager;

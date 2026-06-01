@@ -18,6 +18,7 @@
 #include "server/Server.h"
 
 #include <assert.h>
+#include <cmath>
 #include <cstdlib>
 #include <istream>
 #include <ostream>
@@ -535,6 +536,10 @@ bool Config::operator==(const Config &x) const
     return false;
   }
 
+  if (!workspaceLayoutEqual(m_workspaceLayout, x.m_workspaceLayout)) {
+    return false;
+  }
+
   return true;
 }
 
@@ -576,6 +581,7 @@ void Config::readSection(ConfigReadContext &s)
   static const char s_screens[] = "screens";
   static const char s_links[] = "links";
   static const char s_aliases[] = "aliases";
+  static const char s_displayLayouts[] = "display_layouts";
 
   std::string line;
   if (!s.readLine(line)) {
@@ -608,6 +614,8 @@ void Config::readSection(ConfigReadContext &s)
     readSectionLinks(s);
   } else if (name == s_aliases) {
     readSectionAliases(s);
+  } else if (name == s_displayLayouts) {
+    readSectionDisplayLayouts(s);
   } else {
     throw ServerConfigReadException(s, "unknown section name \"%{1}\"", name);
   }
@@ -915,6 +923,185 @@ void Config::readSectionAliases(ConfigReadContext &s)
     }
   }
   throw ServerConfigReadException(s, "unexpected end of aliases section");
+}
+
+void Config::readSectionDisplayLayouts(ConfigReadContext &s)
+{
+  m_workspaceLayout = WorkspaceLayout{};
+  std::string line;
+  std::string machine;
+  std::string monitor;
+  MachineLayout *currentMachine = nullptr;
+  DisplayRect *currentMonitor = nullptr;
+
+  auto parseMonitorProperty = [&](const std::string &name, const std::string &value) {
+    if (currentMonitor == nullptr) {
+      throw ServerConfigReadException(s, "monitor property before first monitor");
+    }
+    if (name == "id") {
+      currentMonitor->m_id = value;
+    } else if (name == "name") {
+      currentMonitor->m_name = value;
+    } else if (name == "worldX") {
+      currentMonitor->m_worldX = s.parseInt(value);
+    } else if (name == "worldY") {
+      currentMonitor->m_worldY = s.parseInt(value);
+    } else if (name == "width") {
+      currentMonitor->m_width = s.parseInt(value);
+    } else if (name == "height") {
+      currentMonitor->m_height = s.parseInt(value);
+    } else if (name == "localX") {
+      currentMonitor->m_localX = s.parseInt(value);
+    } else if (name == "localY") {
+      currentMonitor->m_localY = s.parseInt(value);
+    } else if (name == "scale") {
+      currentMonitor->m_scale = static_cast<float>(std::stod(value));
+    } else if (name == "dpi") {
+      currentMonitor->m_dpi = s.parseInt(value);
+    } else {
+      throw ServerConfigReadException(s, "unknown monitor property \"%{1}\"", name);
+    }
+  };
+
+  while (s.readLine(line)) {
+    if (line == "end") {
+      return;
+    }
+
+    if (line == "advancedLayout = true" || line == "advancedLayout=true") {
+      m_workspaceLayout.m_enabled = true;
+      continue;
+    }
+    if (line == "advancedLayout = false" || line == "advancedLayout=false") {
+      m_workspaceLayout.m_enabled = false;
+      continue;
+    }
+
+    if (!line.empty() && line.back() == ':') {
+      const std::string name = line.substr(0, line.size() - 1);
+
+      if (isScreen(name)) {
+        machine = name;
+        monitor.clear();
+        currentMachine = m_workspaceLayout.findMachine(name);
+        if (currentMachine == nullptr) {
+          MachineLayout layout;
+          layout.m_name = name;
+          m_workspaceLayout.m_machines.push_back(layout);
+          currentMachine = &m_workspaceLayout.m_machines.back();
+        }
+        currentMonitor = nullptr;
+      } else if (!machine.empty()) {
+        monitor = name;
+        currentMachine->m_monitors.emplace_back();
+        currentMonitor = &currentMachine->m_monitors.back();
+        if (currentMonitor->m_id.empty()) {
+          currentMonitor->m_id = name;
+        }
+      } else {
+        throw ServerConfigReadException(s, "monitor before first machine");
+      }
+      continue;
+    }
+
+    if (machine.empty()) {
+      throw ServerConfigReadException(s, "property before first machine in display layout");
+    }
+
+    std::string::size_type i = line.find_first_of(" \t=");
+    if (i == std::string::npos || i == 0) {
+      throw ServerConfigReadException(s, "invalid display layout property");
+    }
+    const std::string propName = line.substr(0, i);
+    i = line.find('=', i);
+    if (i == std::string::npos) {
+      throw ServerConfigReadException(s, "missing = in display layout property");
+    }
+    i = line.find_first_not_of(" \t", i + 1);
+    std::string value;
+    if (i != std::string::npos) {
+      value = line.substr(i);
+    }
+
+    parseMonitorProperty(propName, value);
+  }
+
+  throw ServerConfigReadException(s, "unexpected end of display_layouts section");
+}
+
+bool Config::hasAdvancedLayout() const
+{
+  return m_workspaceLayout.m_enabled && !m_workspaceLayout.m_machines.empty();
+}
+
+const WorkspaceLayout &Config::getWorkspaceLayout() const
+{
+  return m_workspaceLayout;
+}
+
+WorkspaceLayout &Config::getWorkspaceLayout()
+{
+  return m_workspaceLayout;
+}
+
+bool Config::workspaceLayoutEqual(const WorkspaceLayout &a, const WorkspaceLayout &b)
+{
+  if (a.m_enabled != b.m_enabled || a.m_machines.size() != b.m_machines.size()) {
+    return false;
+  }
+
+  for (std::size_t i = 0; i < a.m_machines.size(); ++i) {
+    const auto &ma = a.m_machines[i];
+    const auto &mb = b.m_machines[i];
+    if (ma.m_name != mb.m_name || ma.m_monitors.size() != mb.m_monitors.size()) {
+      return false;
+    }
+    for (std::size_t j = 0; j < ma.m_monitors.size(); ++j) {
+      const auto &da = ma.m_monitors[j];
+      const auto &db = mb.m_monitors[j];
+      if (da.m_id != db.m_id || da.m_name != db.m_name || da.m_worldX != db.m_worldX || da.m_worldY != db.m_worldY ||
+          da.m_width != db.m_width || da.m_height != db.m_height || da.m_localX != db.m_localX ||
+          da.m_localY != db.m_localY || da.m_dpi != db.m_dpi || std::abs(da.m_scale - db.m_scale) > 0.001f) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void Config::writeDisplayLayouts(std::ostream &s, const WorkspaceLayout &layout)
+{
+  if (layout.m_machines.empty()) {
+    return;
+  }
+
+  s << "section: display_layouts" << std::endl;
+  s << "\tadvancedLayout = " << (layout.m_enabled ? "true" : "false") << std::endl;
+  for (const auto &machine : layout.m_machines) {
+    s << "\t" << machine.m_name << ":" << std::endl;
+    for (const auto &monitor : machine.m_monitors) {
+      s << "\t\t" << (monitor.m_id.empty() ? monitor.m_name : monitor.m_id) << ":" << std::endl;
+      if (!monitor.m_id.empty()) {
+        s << "\t\t\tid = " << monitor.m_id << std::endl;
+      }
+      if (!monitor.m_name.empty()) {
+        s << "\t\t\tname = " << monitor.m_name << std::endl;
+      }
+      s << "\t\t\tworldX = " << monitor.m_worldX << std::endl;
+      s << "\t\t\tworldY = " << monitor.m_worldY << std::endl;
+      s << "\t\t\twidth = " << monitor.m_width << std::endl;
+      s << "\t\t\theight = " << monitor.m_height << std::endl;
+      s << "\t\t\tlocalX = " << monitor.m_localX << std::endl;
+      s << "\t\t\tlocalY = " << monitor.m_localY << std::endl;
+      if (monitor.m_scale != 1.0f) {
+        s << "\t\t\tscale = " << monitor.m_scale << std::endl;
+      }
+      if (monitor.m_dpi != 96) {
+        s << "\t\t\tdpi = " << monitor.m_dpi << std::endl;
+      }
+    }
+  }
+  s << "end" << std::endl;
 }
 
 InputFilter::Condition *
@@ -1633,6 +1820,8 @@ std::ostream &operator<<(std::ostream &s, const Config &config)
     }
     s << "end" << std::endl;
   }
+
+  Config::writeDisplayLayouts(s, config.m_workspaceLayout);
 
   // options section
   s << "section: options" << std::endl;

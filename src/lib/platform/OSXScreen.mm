@@ -867,6 +867,36 @@ bool OSXScreen::isPrimary() const
   return m_isPrimary;
 }
 
+PlatformDisplayList OSXScreen::enumerateDisplays() const
+{
+  PlatformDisplayList displays;
+  CGDisplayCount displayCount = 0;
+  if (CGGetActiveDisplayList(0, nullptr, &displayCount) != kCGErrorSuccess || displayCount == 0) {
+    return displays;
+  }
+
+  auto *cgDisplays = new CGDirectDisplayID[displayCount];
+  if (CGGetActiveDisplayList(displayCount, cgDisplays, &displayCount) != kCGErrorSuccess) {
+    delete[] cgDisplays;
+    return displays;
+  }
+
+  for (CGDisplayCount i = 0; i < displayCount; ++i) {
+    const CGRect bounds = CGDisplayBounds(cgDisplays[i]);
+    PlatformDisplayInfo display;
+    display.m_id = std::to_string(cgDisplays[i]);
+    display.m_name = display.m_id;
+    display.m_x = static_cast<int32_t>(bounds.origin.x);
+    display.m_y = static_cast<int32_t>(bounds.origin.y);
+    display.m_width = static_cast<int32_t>(bounds.size.width);
+    display.m_height = static_cast<int32_t>(bounds.size.height);
+    displays.push_back(display);
+  }
+
+  delete[] cgDisplays;
+  return displays;
+}
+
 void OSXScreen::sendEvent(EventTypes type, void *data) const
 {
   m_events->addEvent(Event(type, getEventTarget(), data));

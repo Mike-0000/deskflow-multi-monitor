@@ -32,3 +32,9 @@ std::string BaseClientProxy::getName() const
 {
   return m_name;
 }
+
+const std::vector<deskflow::server::DisplayRect> &BaseClientProxy::getReportedDisplays() const
+{
+  static const std::vector<deskflow::server::DisplayRect> empty;
+  return empty;
+}

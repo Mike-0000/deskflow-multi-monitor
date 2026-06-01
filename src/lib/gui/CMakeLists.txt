@@ -118,12 +118,15 @@ add_library(${target} STATIC
   widgets/StatusBar.h
   widgets/TrashScreenWidget.cpp
   widgets/TrashScreenWidget.h
+  widgets/AdvancedLayoutWidget.cpp
+  widgets/AdvancedLayoutWidget.h
 )
 
 target_link_libraries(
   ${target}
   common
   platform
+  server
   Qt6::Core
   Qt6::Widgets
   Qt6::Network)

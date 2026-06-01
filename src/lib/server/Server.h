@@ -244,10 +244,18 @@ private:
 
   // lookup neighboring screen.  given a position relative to the
   // source screen, find the screen we should move onto and where.
-  // if the position is sufficiently far from the source then we
-  // cross multiple screens.  if there is no suitable screen then
-  // return nullptr and x,y are not modified.
   BaseClientProxy *mapToNeighbor(BaseClientProxy *, Direction, int32_t &x, int32_t &y) const;
+
+  // lookup neighboring screen using advanced per-monitor geometry.
+  BaseClientProxy *mapToNeighborAdvanced(BaseClientProxy *, Direction, int32_t &x, int32_t &y) const;
+
+  // find connected client by canonical screen name.
+  BaseClientProxy *findClientByName(const std::string &name) const;
+
+  // advanced-layout mouse handlers
+  bool onMouseMovePrimaryAdvanced(int32_t x, int32_t y);
+  void onMouseMoveSecondaryAdvanced(int32_t dx, int32_t dy);
+  void onMouseMoveSecondaryLegacy(int32_t dx, int32_t dy);
 
   // adjusts x and y or neither to avoid ending up in a jump zone
   // after entering the client in the given direction.

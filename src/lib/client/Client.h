@@ -12,6 +12,7 @@
 
 #include "base/EventTypes.h"
 #include "common/Enums.h"
+#include "deskflow/DisplayTypes.h"
 #include "deskflow/IClipboard.h"
 #include "net/NetworkAddress.h"
 
@@ -127,6 +128,8 @@ public:
     return m_resolvedAddressesCount;
   }
 
+  PlatformDisplayList enumerateDisplays() const;
+
   //@}
 
   // IScreen overrides
@@ -189,6 +192,7 @@ private:
   deskflow::IStream *m_stream = nullptr;
   EventQueueTimer *m_timer = nullptr;
   ServerProxy *m_server = nullptr;
+  int16_t m_serverProtocolMinor = 0;
   bool m_ready = false;
   bool m_active = false;
   bool m_suspended = false;

@@ -21,3 +21,19 @@ create_test(
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
 )
 
+create_test(
+  NAME DisplayLayoutTests
+  DEPENDS server
+  LIBS base arch ${extra_libs}
+  SOURCE DisplayLayoutTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
+)
+
+create_test(
+  NAME DisplayLayoutConfigTests
+  DEPENDS server
+  LIBS base arch ${extra_libs}
+  SOURCE DisplayLayoutConfigTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
+)
+

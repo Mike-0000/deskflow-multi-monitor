@@ -136,6 +136,21 @@ p, li { white-space: pre-wrap; }
     </message>
 </context>
 <context>
+    <name>AdvancedLayoutWidget</name>
+    <message>
+        <source>Enable advanced monitor layout</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Machine:</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Import Local Displays</source>
+        <translation type="unfinished"></translation>
+    </message>
+</context>
+<context>
     <name>ClientConfigDialog</name>
     <message>
         <source>Client Configuration</source>
@@ -1109,6 +1124,10 @@ Enabling this setting will disable the server config GUI.</source>
     <message>
         <source>Config file path</source>
         <translation>配置文件路径</translation>
+    </message>
+    <message>
+        <source>Advanced Layout</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>%1 Configurations (*.conf);;All files (*.*)</source>

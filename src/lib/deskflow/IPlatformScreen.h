@@ -9,6 +9,7 @@
 #pragma once
 
 #include "deskflow/ClipboardTypes.h"
+#include "deskflow/DisplayTypes.h"
 #include "deskflow/IKeyState.h"
 #include "deskflow/IPrimaryScreen.h"
 #include "deskflow/IScreen.h"
@@ -144,6 +145,9 @@ public:
   Return true iff this screen is a primary screen.
   */
   virtual bool isPrimary() const = 0;
+
+  //! Enumerate attached physical displays
+  virtual PlatformDisplayList enumerateDisplays() const = 0;
 
   //@}
   // IKeyState overrides

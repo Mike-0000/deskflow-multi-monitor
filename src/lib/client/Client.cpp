@@ -192,6 +192,11 @@ void Client::getCursorPos(int32_t &x, int32_t &y) const
   m_screen->getCursorPos(x, y);
 }
 
+PlatformDisplayList Client::enumerateDisplays() const
+{
+  return m_screen->enumerateDisplays();
+}
+
 void Client::enter(int32_t xAbs, int32_t yAbs, uint32_t, KeyModifierMask mask, bool)
 {
   m_active = true;
@@ -416,7 +421,7 @@ void Client::setupScreen()
   assert(m_server == nullptr);
 
   m_ready = false;
-  m_server = new ServerProxy(this, m_stream, m_events);
+  m_server = new ServerProxy(this, m_stream, m_events, m_serverProtocolMinor);
   m_events->addHandler(EventTypes::ScreenShapeChanged, getEventTarget(), [this](const auto &) {
     handleShapeChanged();
   });
@@ -585,6 +590,7 @@ void Client::handleHello()
   // as `readf` eats bytes (advances the stream position reference).
   std::string protocolName;
   ProtocolUtil::readf(m_stream, kMsgHello, &protocolName, &serverMajor, &serverMinor);
+  m_serverProtocolMinor = serverMinor;
 
   if (const auto proto = networkProtocolFromString(QString::fromStdString(protocolName));
       proto == NetworkProtocol::Unknown) {

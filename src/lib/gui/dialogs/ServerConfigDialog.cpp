@@ -16,6 +16,7 @@
 #include "dialogs/ActionDialog.h"
 #include "dialogs/HotkeyDialog.h"
 #include "dialogs/ScreenSettingsDialog.h"
+#include "widgets/AdvancedLayoutWidget.h"
 
 #include <QFileDialog>
 #include <QMessageBox>
@@ -173,6 +174,27 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
 
   // computers
   connect(&m_screenSetupModel, &ScreenSetupModel::screensChanged, this, &ServerConfigDialog::onChange);
+
+  m_advancedLayoutWidget = new AdvancedLayoutWidget(this);
+  ui->tabWidget->addTab(m_advancedLayoutWidget, tr("Advanced Layout"));
+  QStringList machineNames;
+  for (const Screen &screen : serverConfig().screens()) {
+    if (!screen.isNull()) {
+      machineNames.append(screen.name());
+    }
+  }
+  m_advancedLayoutWidget->setKnownMachines(machineNames);
+  m_advancedLayoutWidget->setWorkspaceLayout(serverConfig().workspaceLayout());
+  connect(m_advancedLayoutWidget, &AdvancedLayoutWidget::layoutChanged, this, &ServerConfigDialog::onChange);
+  connect(&m_screenSetupModel, &ScreenSetupModel::screensChanged, this, [this]() {
+    QStringList names;
+    for (const Screen &screen : serverConfig().screens()) {
+      if (!screen.isNull()) {
+        names.append(screen.name());
+      }
+    }
+    m_advancedLayoutWidget->setKnownMachines(names);
+  });
 }
 
 ServerConfigDialog::~ServerConfigDialog() = default;
@@ -197,6 +219,7 @@ void ServerConfigDialog::accept()
 
   // now that the dialog has been accepted, copy the new server config to the
   // original one, which is a reference to the one in MainWindow.
+  serverConfig().setWorkspaceLayout(m_advancedLayoutWidget->workspaceLayout());
   setOriginalServerConfig(serverConfig());
 
   QDialog::accept();

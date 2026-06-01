@@ -11,6 +11,7 @@
 #include "gui/Hotkey.h"
 #include "gui/config/ScreenConfig.h"
 #include "gui/config/ScreenList.h"
+#include "server/DisplayLayout.h"
 
 #include <QList>
 
@@ -222,6 +223,18 @@ private:
   void setConfigFile(const QString &configFile) const;
   void setUseExternalConfig(bool useExternalConfig) const;
   size_t setClipboardSharingSize(size_t size);
+  bool hasAdvancedLayout() const
+  {
+    return m_workspaceLayout.m_enabled;
+  }
+  const deskflow::server::WorkspaceLayout &workspaceLayout() const
+  {
+    return m_workspaceLayout;
+  }
+  void setWorkspaceLayout(const deskflow::server::WorkspaceLayout &layout)
+  {
+    m_workspaceLayout = layout;
+  }
   QList<bool> &switchCorners()
   {
     return m_SwitchCorners;
@@ -256,6 +269,7 @@ private:
   int m_Columns;
   int m_Rows;
   size_t m_ClipboardSharingSize = defaultClipboardSharingSize();
+  deskflow::server::WorkspaceLayout m_workspaceLayout;
 };
 
 QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config);

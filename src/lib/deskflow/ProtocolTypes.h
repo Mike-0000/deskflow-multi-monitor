@@ -45,7 +45,7 @@ static const int16_t kProtocolMajorVersion = 1;
  * @note When incrementing the minor version, the Deskflow application version should also increment
  * @since Protocol version 1.0
  */
-static const int16_t kProtocolMinorVersion = 8;
+static const int16_t kProtocolMinorVersion = 9;
 
 /**
  * @brief Default TCP port for Deskflow connections
@@ -955,6 +955,16 @@ extern const char *const kMsgDClipboard;
  * @since Protocol version 1.0
  */
 extern const char *const kMsgDInfo;
+
+/**
+ * @brief Client display layout information (protocol 1.9+)
+ *
+ * **Message Code**: `"DDSP"`
+ * **Direction**: Secondary → Primary
+ * **Format**: `"DDSP%2i"` followed by count × `kMsgDDisplayInfoArgs`
+ */
+extern const char *const kMsgDDisplayInfo;
+extern const char *const kMsgDDisplayInfoArgs;
 
 /**
  * @brief Set client options

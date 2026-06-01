@@ -384,6 +384,25 @@ This indicates that computer ''larry'' is to the right of computer ''moe'' (so m
 
 Note that links do not have to be symmetrical; for instance, here the edge between ''moe'' and ''curly'' maps to different ranges depending on if you're going up or down. In fact links don't have to be bidirectional. You can configure the right of ''moe'' to go to ''larry'' without a link from the left of ''larry'' to ''moe''. It's possible to configure a computer with no outgoing links; the cursor will get stuck on that computer unless you have a hot key configured to switch off of that computer.
 
+### display_layouts section (advanced monitor layout)
+
+When `advancedLayout = true`, DeskFlow routes the cursor using per-monitor rectangles placed in a shared world coordinate space. This supports partial edge overlaps between monitors on different computers, similar to the Windows Display Settings layout.
+
+Each computer entry lists one or more monitors. Each monitor defines:
+
+| Property | Description |
+|:---------|:------------|
+| `id` | Stable monitor identifier |
+| `name` | Human-readable label |
+| `worldX`, `worldY` | Position in the shared layout |
+| `width`, `height` | Monitor size in pixels |
+| `localX`, `localY` | Position on that computer's OS desktop |
+| `scale`, `dpi` | Optional scaling metadata |
+
+When advanced layout is enabled, the server uses geometry-based routing. The legacy `links` section remains available as a fallback when advanced layout is disabled.
+
+See [advanced-layout-example.conf](advanced-layout-example.conf) for a two-computer, multi-monitor example.
+
 ### options section
 
 ''args'' is a list of lines of the form <code>name = value</code>. These set the global options.

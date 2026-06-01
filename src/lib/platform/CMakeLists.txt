@@ -170,6 +170,10 @@ add_library(platform STATIC ${PLATFORM_SOURCES})
 
 target_link_libraries(platform client ${libs})
 
+if(WIN32)
+  target_link_libraries(platform shcore)
+endif()
+
 if(UNIX)
   target_link_libraries(
     platform

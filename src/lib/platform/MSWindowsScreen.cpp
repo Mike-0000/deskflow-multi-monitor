@@ -29,6 +29,7 @@
 #include "platform/MSWindowsScreenSaver.h"
 
 #include <Shlobj.h>
+#include <shellscalingapi.h>
 #include <algorithm>
 #include <comutil.h>
 #include <string.h>
@@ -409,6 +410,55 @@ void MSWindowsScreen::setSequenceNumber(uint32_t seqNum)
 bool MSWindowsScreen::isPrimary() const
 {
   return m_isPrimary;
+}
+
+PlatformDisplayList MSWindowsScreen::enumerateDisplays() const
+{
+  PlatformDisplayList displays;
+
+  struct EnumContext
+  {
+    PlatformDisplayList *m_displays;
+  } context{&displays};
+
+  auto callback = [](HMONITOR monitor, HDC, LPRECT, LPARAM data) -> BOOL {
+    auto *ctx = reinterpret_cast<EnumContext *>(data);
+    MONITORINFOEX info{};
+    info.cbSize = sizeof(info);
+    if (!GetMonitorInfo(monitor, &info)) {
+      return TRUE;
+    }
+
+    PlatformDisplayInfo display;
+    display.m_id = std::to_string(reinterpret_cast<uintptr_t>(monitor));
+#ifdef UNICODE
+    const int nameLen = WideCharToMultiByte(CP_UTF8, 0, info.szDevice, -1, nullptr, 0, nullptr, nullptr);
+    if (nameLen > 0) {
+      std::string name(static_cast<size_t>(nameLen - 1), '\0');
+      WideCharToMultiByte(CP_UTF8, 0, info.szDevice, -1, name.data(), nameLen, nullptr, nullptr);
+      display.m_name = std::move(name);
+    }
+#else
+    display.m_name = info.szDevice;
+#endif
+    display.m_x = info.rcMonitor.left;
+    display.m_y = info.rcMonitor.top;
+    display.m_width = info.rcMonitor.right - info.rcMonitor.left;
+    display.m_height = info.rcMonitor.bottom - info.rcMonitor.top;
+
+    UINT dpiX = 96;
+    UINT dpiY = 96;
+    if (GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY) == S_OK) {
+      display.m_dpi = static_cast<int32_t>(dpiX);
+      display.m_scale = static_cast<float>(dpiX) / 96.0f;
+    }
+
+    ctx->m_displays->push_back(display);
+    return TRUE;
+  };
+
+  EnumDisplayMonitors(nullptr, nullptr, callback, reinterpret_cast<LPARAM>(&context));
+  return displays;
 }
 
 void *MSWindowsScreen::getEventTarget() const

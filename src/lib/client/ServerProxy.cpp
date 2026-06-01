@@ -27,10 +27,11 @@
 // ServerProxy
 //
 
-ServerProxy::ServerProxy(Client *client, deskflow::IStream *stream, IEventQueue *events)
+ServerProxy::ServerProxy(Client *client, deskflow::IStream *stream, IEventQueue *events, int16_t serverProtocolMinor)
     : m_client(client),
       m_stream(stream),
-      m_events(events)
+      m_events(events),
+      m_serverProtocolMinor(serverProtocolMinor)
 {
   assert(m_client != nullptr);
   assert(m_stream != nullptr);
@@ -382,6 +383,31 @@ void ServerProxy::sendInfo(const ClientInfo &info)
 {
   LOG_VERBOSE("sending info shape=%d,%d %dx%d", info.m_x, info.m_y, info.m_w, info.m_h);
   ProtocolUtil::writef(m_stream, kMsgDInfo, info.m_x, info.m_y, info.m_w, info.m_h, 0, info.m_mx, info.m_my);
+  sendDisplayInfo();
+}
+
+void ServerProxy::sendDisplayInfo()
+{
+  if (m_serverProtocolMinor < 9) {
+    return;
+  }
+
+  const PlatformDisplayList displays = m_client->enumerateDisplays();
+  if (displays.empty()) {
+    return;
+  }
+
+  ProtocolUtil::writef(m_stream, kMsgDDisplayInfo, static_cast<int16_t>(displays.size()));
+  for (const auto &display : displays) {
+    const int16_t scale100 = static_cast<int16_t>(display.m_scale * 100.0f + 0.5f);
+    std::string id = display.m_id;
+    ProtocolUtil::writef(
+        m_stream, kMsgDDisplayInfoArgs, &id, static_cast<int16_t>(display.m_x), static_cast<int16_t>(display.m_y),
+        static_cast<int16_t>(display.m_width), static_cast<int16_t>(display.m_height), scale100,
+        static_cast<int16_t>(display.m_dpi)
+    );
+  }
+  LOG_VERBOSE("sent %zu display(s) to server", displays.size());
 }
 
 KeyID ServerProxy::translateKey(KeyID id) const

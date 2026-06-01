@@ -92,6 +92,7 @@ public:
   void setOptions(const OptionsList &options) override;
   void setSequenceNumber(uint32_t) override;
   bool isPrimary() const override;
+  PlatformDisplayList enumerateDisplays() const override;
   std::string getSecureInputApp() const override;
 
   void waitForCarbonLoop() const;

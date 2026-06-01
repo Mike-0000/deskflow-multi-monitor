@@ -66,6 +66,7 @@ add_library(${lib_name} STATIC ${PLATFORM_CODE}
   PlatformScreen.cpp
   PlatformScreen.h
   ProtocolTypes.cpp
+  DisplayTypes.h
   ProtocolTypes.h
   ProtocolUtil.cpp
   ProtocolUtil.h

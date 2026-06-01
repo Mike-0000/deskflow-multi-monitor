@@ -13,6 +13,7 @@
 #include "deskflow/IPlatformScreen.h"
 #include "deskflow/OptionTypes.h"
 #include "net/NetworkAddress.h"
+#include "server/DisplayLayout.h"
 #include "server/InputFilter.h"
 
 #include <iosfwd>
@@ -447,6 +448,16 @@ public:
   Returns an interval as a parseable string.
   */
   static std::string formatInterval(const Interval &);
+
+  //! Returns true when advanced per-monitor layout routing is enabled.
+  bool hasAdvancedLayout() const;
+
+  //! Get the advanced workspace layout.
+  const WorkspaceLayout &getWorkspaceLayout() const;
+
+  //! Get mutable workspace layout for GUI editing.
+  WorkspaceLayout &getWorkspaceLayout();
+
   //@}
 
 private:
@@ -455,6 +466,10 @@ private:
   void readSectionScreens(ConfigReadContext &);
   void readSectionLinks(ConfigReadContext &);
   void readSectionAliases(ConfigReadContext &);
+  void readSectionDisplayLayouts(ConfigReadContext &);
+
+  static bool workspaceLayoutEqual(const WorkspaceLayout &, const WorkspaceLayout &);
+  static void writeDisplayLayouts(std::ostream &, const WorkspaceLayout &);
 
   InputFilter::Condition *
   parseCondition(const ConfigReadContext &, const std::string &condition, const std::vector<std::string> &args);
@@ -474,6 +489,7 @@ private:
   ScreenOptions m_globalOptions;
   InputFilter m_inputFilter;
   bool m_hasLockToScreenAction = false;
+  WorkspaceLayout m_workspaceLayout;
   IEventQueue *m_events;
 };
 
