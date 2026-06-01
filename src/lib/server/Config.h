@@ -458,6 +458,8 @@ public:
   //! Get mutable workspace layout for GUI editing.
   WorkspaceLayout &getWorkspaceLayout();
 
+  static bool workspaceLayoutEqual(const WorkspaceLayout &, const WorkspaceLayout &);
+
   //@}
 
 private:
@@ -468,7 +470,6 @@ private:
   void readSectionAliases(ConfigReadContext &);
   void readSectionDisplayLayouts(ConfigReadContext &);
 
-  static bool workspaceLayoutEqual(const WorkspaceLayout &, const WorkspaceLayout &);
   static void writeDisplayLayouts(std::ostream &, const WorkspaceLayout &);
 
   InputFilter::Condition *

@@ -641,7 +641,14 @@ void Config::readSectionOptions(ConfigReadContext &s)
     ConfigReadContext::ArgList valueArgs;
     s.parseNameWithArgs("name", line, "=", i, name, nameArgs);
     ++i;
-    s.parseNameWithArgs("value", line, ",;\n", i, value, valueArgs);
+    i = line.find_first_not_of(" \t", i);
+    if (i == std::string::npos) {
+      value.clear();
+      valueArgs.clear();
+      i = line.length();
+    } else {
+      s.parseNameWithArgs("value", line, ",;\n", i, value, valueArgs);
+    }
 
     // Skip old protocol name
     if (name == "protocol")
@@ -650,6 +657,9 @@ void Config::readSectionOptions(ConfigReadContext &s)
     bool handled = true;
 
     if (name == "address") {
+      if (value.empty()) {
+        continue;
+      }
       try {
         m_deskflowAddress = NetworkAddress(value, kDefaultPort);
         m_deskflowAddress.resolve();
@@ -683,7 +693,13 @@ void Config::readSectionOptions(ConfigReadContext &s)
     } else if (name == "clipboardSharing") {
       addOption("", kOptionClipboardSharing, s.parseBoolean(value));
     } else if (name == "clipboardSharingSize") {
-      addOption("", kOptionClipboardSharingSize, s.parseInt(value));
+      if (CaselessCmp::equal(value, "true")) {
+        addOption("", kOptionClipboardSharingSize, 3 * 1024);
+      } else if (CaselessCmp::equal(value, "false")) {
+        addOption("", kOptionClipboardSharingSize, 0);
+      } else {
+        addOption("", kOptionClipboardSharingSize, s.parseInt(value));
+      }
     } else {
       handled = false;
     }
@@ -1071,7 +1087,7 @@ bool Config::workspaceLayoutEqual(const WorkspaceLayout &a, const WorkspaceLayou
 
 void Config::writeDisplayLayouts(std::ostream &s, const WorkspaceLayout &layout)
 {
-  if (layout.m_machines.empty()) {
+  if (!layout.m_enabled && layout.m_machines.empty()) {
     return;
   }
 
@@ -1455,8 +1471,7 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
   if (id == kOptionHalfDuplexCapsLock || id == kOptionHalfDuplexNumLock || id == kOptionHalfDuplexScrollLock ||
       id == kOptionScreenSwitchNeedsShift || id == kOptionScreenSwitchNeedsControl ||
       id == kOptionScreenSwitchNeedsAlt || id == kOptionXTestXineramaUnaware || id == kOptionRelativeMouseMoves ||
-      id == kOptionWin32KeepForeground || id == kOptionScreenPreserveFocus || id == kOptionClipboardSharing ||
-      id == kOptionClipboardSharingSize) {
+      id == kOptionWin32KeepForeground || id == kOptionScreenPreserveFocus || id == kOptionClipboardSharing) {
     return (value != 0) ? "true" : "false";
   }
   if (id == kOptionModifierMapForShift || id == kOptionModifierMapForControl || id == kOptionModifierMapForAlt ||
@@ -1485,7 +1500,7 @@ std::string Config::getOptionValue(OptionID id, OptionValue value)
     }
   }
   if (id == kOptionHeartbeat || id == kOptionScreenSwitchCornerSize || id == kOptionScreenSwitchDelay ||
-      id == kOptionScreenSwitchTwoTap) {
+      id == kOptionScreenSwitchTwoTap || id == kOptionClipboardSharingSize) {
     return deskflow::string::sprintf("%d", value);
   }
   if (id == kOptionScreenSwitchCorners) {
@@ -1834,7 +1849,7 @@ std::ostream &operator<<(std::ostream &s, const Config &config)
       }
     }
   }
-  if (config.m_deskflowAddress.isValid()) {
+  if (config.m_deskflowAddress.isValid() && !config.m_deskflowAddress.getHostname().empty()) {
     s << "\taddress = " << config.m_deskflowAddress.getHostname().c_str() << std::endl;
   }
   s << config.m_inputFilter.format("\t");

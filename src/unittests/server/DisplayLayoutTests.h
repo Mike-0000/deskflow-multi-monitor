@@ -18,6 +18,7 @@ private Q_SLOTS:
   void noOverlapGap();
   void sameMachineNoSwitch();
   void stackedMonitors();
+  void lShapedServerCanSwitchToClientAboveLeft();
   void negativeCoordinates();
   void detectExitDirectionCorner();
   void clampToMonitor();

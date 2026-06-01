@@ -184,8 +184,16 @@ ServerConfigDialog::ServerConfigDialog(QWidget *parent, ServerConfig &config)
     }
   }
   m_advancedLayoutWidget->setKnownMachines(machineNames);
+  serverConfig().reloadWorkspaceLayoutFromConfigFile();
   m_advancedLayoutWidget->setWorkspaceLayout(serverConfig().workspaceLayout());
-  connect(m_advancedLayoutWidget, &AdvancedLayoutWidget::layoutChanged, this, &ServerConfigDialog::onChange);
+  connect(m_advancedLayoutWidget, &AdvancedLayoutWidget::layoutChanged, this, [this]() {
+    serverConfig().setWorkspaceLayout(m_advancedLayoutWidget->workspaceLayout());
+    onChange();
+  });
+  connect(
+      m_advancedLayoutWidget, &AdvancedLayoutWidget::requestClientDisplayImport, this,
+      &ServerConfigDialog::importClientDisplays
+  );
   connect(&m_screenSetupModel, &ScreenSetupModel::screensChanged, this, [this]() {
     QStringList names;
     for (const Screen &screen : serverConfig().screens()) {
@@ -221,6 +229,7 @@ void ServerConfigDialog::accept()
   // original one, which is a reference to the one in MainWindow.
   serverConfig().setWorkspaceLayout(m_advancedLayoutWidget->workspaceLayout());
   setOriginalServerConfig(serverConfig());
+  m_originalServerConfig.commit();
 
   QDialog::accept();
 }
@@ -538,4 +547,55 @@ void ServerConfigDialog::onChange()
       m_originalProtocol == Settings::value(Settings::Server::Protocol).value<NetworkProtocol>();
   ui->buttonBox->button(QDialogButtonBox::Ok)
       ->setEnabled(!isAppConfigDataEqual || !(m_originalServerConfig == m_serverConfig));
+}
+
+void ServerConfigDialog::importClientDisplays(const QString &machineName, bool overwrite)
+{
+  if (machineName.isEmpty()) {
+    return;
+  }
+
+  serverConfig().reloadWorkspaceLayoutFromConfigFile();
+  QString targetMachineName = machineName;
+  const QString serverName = serverConfig().getServerName();
+
+  if (targetMachineName == serverName) {
+    QStringList candidates;
+    for (const auto &machine : serverConfig().workspaceLayout().m_machines) {
+      const QString candidateName = QString::fromStdString(machine.m_name);
+      if (candidateName != serverName && !machine.m_monitors.empty()) {
+        candidates.append(candidateName);
+      }
+    }
+
+    if (candidates.size() == 1) {
+      targetMachineName = candidates.first();
+    } else {
+      QMessageBox::information(
+          this, tr("Import from Connected Client"),
+          tr("Select a connected client machine first.\n\n"
+             "The server machine \"%1\" uses Import Local Displays; this button imports monitor lists reported by "
+             "remote clients.")
+              .arg(serverName)
+      );
+      return;
+    }
+  }
+
+  const auto *machine = serverConfig().workspaceLayout().findMachine(targetMachineName.toStdString());
+  if (machine == nullptr || machine->m_monitors.empty()) {
+    QMessageBox::information(
+        this, tr("Import from Connected Client"),
+        tr("No monitor list is available for \"%1\" yet.\n\n"
+           "Make sure the client is connected to this server and running the same Deskflow build "
+           "(protocol 1.9) as the server, then try again.")
+            .arg(targetMachineName)
+    );
+    return;
+  }
+
+  m_advancedLayoutWidget->setWorkspaceLayout(serverConfig().workspaceLayout());
+  m_advancedLayoutWidget->importDisplaysForMachine(targetMachineName, machine->m_monitors, overwrite);
+  serverConfig().setWorkspaceLayout(m_advancedLayoutWidget->workspaceLayout());
+  onChange();
 }

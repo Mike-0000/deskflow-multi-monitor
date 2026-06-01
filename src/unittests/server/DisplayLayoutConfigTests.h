@@ -15,4 +15,5 @@ class DisplayLayoutConfigTests : public QObject
 private Q_SLOTS:
   void parseAdvancedLayoutSection();
   void serializeAdvancedLayoutSection();
+  void parseLayoutFromGeneratedServerConfig();
 };

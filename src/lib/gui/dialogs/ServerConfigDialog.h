@@ -108,4 +108,5 @@ private:
 
 private Q_SLOTS:
   void onChange();
+  void importClientDisplays(const QString &machineName, bool overwrite);
 };

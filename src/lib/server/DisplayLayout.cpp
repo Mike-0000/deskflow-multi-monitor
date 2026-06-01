@@ -12,6 +12,34 @@
 
 namespace deskflow::server {
 
+namespace {
+
+bool isAtExitEdge(const DisplayRect &monitor, int32_t localX, int32_t localY, Direction exitDir)
+{
+  constexpr int32_t margin = 1;
+  const int32_t left = monitor.m_localX;
+  const int32_t right = monitor.m_localX + monitor.m_width - 1;
+  const int32_t top = monitor.m_localY;
+  const int32_t bottom = monitor.m_localY + monitor.m_height - 1;
+
+  switch (exitDir) {
+  case Direction::Left:
+    return localX >= left - margin && localX <= left + margin && localY >= top - margin && localY <= bottom + margin;
+  case Direction::Right:
+    return localX >= right - margin && localX <= right + margin && localY >= top - margin && localY <= bottom + margin;
+  case Direction::Top:
+    return localY >= top - margin && localY <= top + margin && localX >= left - margin && localX <= right + margin;
+  case Direction::Bottom:
+    return localY >= bottom - margin && localY <= bottom + margin && localX >= left - margin && localX <= right + margin;
+  case Direction::NoDirection:
+    return false;
+  }
+
+  return false;
+}
+
+} // namespace
+
 bool DisplayRect::containsLocal(int32_t x, int32_t y) const
 {
   return x >= m_localX && x < m_localX + m_width && y >= m_localY && y < m_localY + m_height;
@@ -215,6 +243,10 @@ std::optional<TransitionResult> GeometryRouter::findTransition(
   }
 
   if (exitDir == Direction::NoDirection) {
+    return std::nullopt;
+  }
+
+  if (!isAtExitEdge(*srcMonitor, localX, localY, exitDir)) {
     return std::nullopt;
   }
 

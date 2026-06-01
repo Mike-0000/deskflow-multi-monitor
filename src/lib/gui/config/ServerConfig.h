@@ -133,6 +133,7 @@ public:
   void save(QFile &file) const;
   bool isFull() const;
   void commit();
+  void reloadWorkspaceLayoutFromConfigFile();
   int numScreens() const;
   QString getServerName() const;
   void updateServerName();

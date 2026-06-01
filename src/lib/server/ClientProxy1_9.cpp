@@ -81,5 +81,10 @@ bool ClientProxy1_9::recvDisplayInfo()
   }
 
   LOG_DEBUG("received %zu display(s) from client \"%s\"", m_reportedDisplays.size(), getName().c_str());
+
+  if (m_server != nullptr && !m_reportedDisplays.empty()) {
+    m_server->mergeReportedClientDisplays(getName(), m_reportedDisplays);
+  }
+
   return true;
 }

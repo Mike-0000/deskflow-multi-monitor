@@ -10,8 +10,10 @@
 
 #include "Hotkey.h"
 #include "common/Settings.h"
+#include "server/Config.h"
 
 #include <QAbstractButton>
+#include <QFile>
 #include <QPushButton>
 
 using enum ScreenConfig::Modifier;
@@ -70,7 +72,8 @@ bool ServerConfig::operator==(const ServerConfig &sc) const
          m_DefaultLockToScreenState == sc.m_DefaultLockToScreenState && //
          m_DisableLockToScreen == sc.m_DisableLockToScreen &&           //
          m_ClipboardSharing == sc.m_ClipboardSharing &&                 //
-         m_ClipboardSharingSize == sc.m_ClipboardSharingSize;
+         m_ClipboardSharingSize == sc.m_ClipboardSharingSize &&         //
+         deskflow::server::Config::workspaceLayoutEqual(m_workspaceLayout, sc.m_workspaceLayout);
 }
 
 void ServerConfig::save(QFile &file) const
@@ -140,6 +143,32 @@ void ServerConfig::commit()
   }
   settings().endArray();
 
+  settings().setValue("workspaceLayout/enabled", m_workspaceLayout.m_enabled);
+  settings().setValue("workspaceLayout/machineCount", static_cast<int>(m_workspaceLayout.m_machines.size()));
+  settings().beginWriteArray("workspaceLayout/machines");
+  for (int i = 0; i < static_cast<int>(m_workspaceLayout.m_machines.size()); ++i) {
+    settings().setArrayIndex(i);
+    const auto &machine = m_workspaceLayout.m_machines[static_cast<std::size_t>(i)];
+    settings().setValue("name", QString::fromStdString(machine.m_name));
+    settings().beginWriteArray("monitors");
+    for (int j = 0; j < static_cast<int>(machine.m_monitors.size()); ++j) {
+      settings().setArrayIndex(j);
+      const auto &monitor = machine.m_monitors[static_cast<std::size_t>(j)];
+      settings().setValue("id", QString::fromStdString(monitor.m_id));
+      settings().setValue("displayName", QString::fromStdString(monitor.m_name));
+      settings().setValue("worldX", monitor.m_worldX);
+      settings().setValue("worldY", monitor.m_worldY);
+      settings().setValue("width", monitor.m_width);
+      settings().setValue("height", monitor.m_height);
+      settings().setValue("localX", monitor.m_localX);
+      settings().setValue("localY", monitor.m_localY);
+      settings().setValue("scale", static_cast<double>(monitor.m_scale));
+      settings().setValue("dpi", monitor.m_dpi);
+    }
+    settings().endArray();
+  }
+  settings().endArray();
+
   settings().endGroup();
 }
 
@@ -195,7 +224,69 @@ void ServerConfig::recall()
   }
   settings().endArray();
 
+  m_workspaceLayout.m_enabled = settings().value("workspaceLayout/enabled", false).toBool();
+  const int machineCount = settings().value("workspaceLayout/machineCount", 0).toInt();
+  m_workspaceLayout.m_machines.clear();
+  if (machineCount > 0) {
+    const int storedMachines = settings().beginReadArray("workspaceLayout/machines");
+    for (int i = 0; i < storedMachines; ++i) {
+      settings().setArrayIndex(i);
+      deskflow::server::MachineLayout machine;
+      machine.m_name = settings().value("name").toString().toStdString();
+      const int monitorCount = settings().beginReadArray("monitors");
+      for (int j = 0; j < monitorCount; ++j) {
+        settings().setArrayIndex(j);
+        deskflow::server::DisplayRect monitor;
+        monitor.m_id = settings().value("id").toString().toStdString();
+        monitor.m_name = settings().value("displayName").toString().toStdString();
+        monitor.m_worldX = settings().value("worldX", 0).toInt();
+        monitor.m_worldY = settings().value("worldY", 0).toInt();
+        monitor.m_width = settings().value("width", 0).toInt();
+        monitor.m_height = settings().value("height", 0).toInt();
+        monitor.m_localX = settings().value("localX", 0).toInt();
+        monitor.m_localY = settings().value("localY", 0).toInt();
+        monitor.m_scale = static_cast<float>(settings().value("scale", 1.0).toDouble());
+        monitor.m_dpi = settings().value("dpi", 96).toInt();
+        machine.m_monitors.push_back(monitor);
+      }
+      settings().endArray();
+      m_workspaceLayout.m_machines.push_back(machine);
+    }
+    settings().endArray();
+  }
+
+  reloadWorkspaceLayoutFromConfigFile();
+
   settings().endGroup();
+}
+
+void ServerConfig::reloadWorkspaceLayoutFromConfigFile()
+{
+  const QString path = Settings::value(Settings::Server::ExternalConfig).toBool()
+                           ? Settings::value(Settings::Server::ExternalConfigFile).toString()
+                           : Settings::defaultValue(Settings::Server::ExternalConfigFile).toString();
+
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    return;
+  }
+
+  const QByteArray data = file.readAll();
+  if (data.isEmpty()) {
+    return;
+  }
+
+  std::istringstream input(std::string(data.constData(), static_cast<std::size_t>(data.size())));
+  try {
+    deskflow::server::Config config(nullptr);
+    input >> config;
+    const auto &fileLayout = config.getWorkspaceLayout();
+    if (fileLayout.m_enabled || !fileLayout.m_machines.empty()) {
+      m_workspaceLayout = fileLayout;
+    }
+  } catch (const deskflow::server::ServerConfigReadException &e) {
+    qWarning() << "failed to read display layouts from" << path << e.what();
+  }
 }
 
 int ServerConfig::adjacentScreenIndex(int idx, int deltaColumn, int deltaRow) const
@@ -252,9 +343,9 @@ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config)
 
   outStream << "end" << Qt::endl << Qt::endl;
 
-  if (!config.workspaceLayout().m_machines.empty()) {
+  if (config.workspaceLayout().m_enabled || !config.workspaceLayout().m_machines.empty()) {
     outStream << "section: display_layouts" << Qt::endl;
-    outStream << "\tadvancedLayout = " << (config.hasAdvancedLayout() ? "true" : "false") << Qt::endl;
+    outStream << "\tadvancedLayout = " << (config.workspaceLayout().m_enabled ? "true" : "false") << Qt::endl;
     for (const auto &machine : config.workspaceLayout().m_machines) {
       outStream << "\t" << QString::fromStdString(machine.m_name) << ":" << Qt::endl;
       for (const auto &monitor : machine.m_monitors) {

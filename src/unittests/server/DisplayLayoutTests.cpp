@@ -122,6 +122,38 @@ void DisplayLayoutTests::stackedMonitors()
   QCOMPARE(result->m_dstMachine, std::string("remote"));
 }
 
+void DisplayLayoutTests::lShapedServerCanSwitchToClientAboveLeft()
+{
+  WorkspaceLayout layout;
+  layout.m_enabled = true;
+
+  MachineLayout server;
+  server.m_name = "server";
+  server.m_monitors.push_back(makeMonitor("left", 0, 300, 1920, 1080, 0, 300));
+  server.m_monitors.push_back(makeMonitor("right", 1920, 0, 1440, 1440, 1920, 0));
+
+  MachineLayout client;
+  client.m_name = "client";
+  client.m_monitors.push_back(makeMonitor("only", 0, -780, 1920, 1080));
+
+  layout.m_machines.push_back(server);
+  layout.m_machines.push_back(client);
+
+  GeometryRouter router(layout);
+
+  const auto fromTopOfLeft = router.findTransition("server", 1000, 300, Direction::Top);
+  QVERIFY(fromTopOfLeft.has_value());
+  QCOMPARE(fromTopOfLeft->m_dstMachine, std::string("client"));
+  QCOMPARE(fromTopOfLeft->m_dstX, 1000);
+  QCOMPARE(fromTopOfLeft->m_dstY, 1079);
+
+  const auto fromUpperLeftOfRight = router.findTransition("server", 1920, 100, Direction::Left);
+  QVERIFY(fromUpperLeftOfRight.has_value());
+  QCOMPARE(fromUpperLeftOfRight->m_dstMachine, std::string("client"));
+  QCOMPARE(fromUpperLeftOfRight->m_dstX, 1919);
+  QCOMPARE(fromUpperLeftOfRight->m_dstY, 880);
+}
+
 void DisplayLayoutTests::negativeCoordinates()
 {
   WorkspaceLayout layout;
@@ -134,7 +166,7 @@ void DisplayLayoutTests::negativeCoordinates()
 
   MachineLayout client;
   client.m_name = "client";
-  client.m_monitors.push_back(makeMonitor("only", -1920, 200, 1920, 1080));
+  client.m_monitors.push_back(makeMonitor("only", -3840, 200, 1920, 1080));
 
   layout.m_machines.push_back(main);
   layout.m_machines.push_back(client);

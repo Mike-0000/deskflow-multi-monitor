@@ -154,6 +154,11 @@ public:
   */
   bool setConfig(const ServerConfig &);
 
+  //! Merge monitor geometry reported by a connected client into the server config.
+  void mergeReportedClientDisplays(
+      const std::string &clientName, const std::vector<deskflow::server::DisplayRect> &displays, bool overwrite = false
+  );
+
   //! Add a client
   /*!
   Adds \p client to the server.  The client is adopted and will be

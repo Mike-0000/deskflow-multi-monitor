@@ -21,33 +21,63 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace {
+
+constexpr qreal kSceneScale = 0.15;
+constexpr int32_t kSnapDistance = 24;
 
 class MonitorRectItem : public QGraphicsRectItem
 {
 public:
-  MonitorRectItem(qreal x, qreal y, qreal w, qreal h, deskflow::server::DisplayRect *monitor)
-      : QGraphicsRectItem(x, y, w, h),
-        m_monitor(monitor)
+  MonitorRectItem(
+      qreal x, qreal y, qreal w, qreal h, deskflow::server::DisplayRect *monitor, AdvancedLayoutWidget *owner,
+      bool movable
+  )
+      : QGraphicsRectItem(0, 0, w, h),
+        m_monitor(monitor),
+        m_owner(owner)
   {
-    setFlags(QGraphicsItem::ItemIsMovable | QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemSendsGeometryChanges);
+    setPos(x, y);
+    m_acceptPositionChanges = true;
+    QGraphicsItem::GraphicsItemFlags flags = QGraphicsItem::ItemIsSelectable | QGraphicsItem::ItemSendsGeometryChanges;
+    if (movable) {
+      flags |= QGraphicsItem::ItemIsMovable;
+    }
+    setFlags(flags);
     setBrush(QColor(70, 130, 180, 120));
     setPen(QPen(Qt::white, 2));
   }
 
   QVariant itemChange(GraphicsItemChange change, const QVariant &value) override
   {
-    if (change == ItemPositionChange && m_monitor != nullptr) {
-      const QPointF pos = value.toPointF();
-      m_monitor->m_worldX = static_cast<int32_t>(pos.x());
-      m_monitor->m_worldY = static_cast<int32_t>(pos.y());
+    if (!m_acceptPositionChanges) {
+      return QGraphicsRectItem::itemChange(change, value);
     }
-    return QGraphicsRectItem::itemChange(change, value);
+
+    if (change == ItemPositionChange && m_monitor != nullptr) {
+      QPointF pos = value.toPointF();
+      if (m_owner != nullptr) {
+        pos = m_owner->snapMonitorPosition(m_monitor, pos);
+      }
+      m_monitor->m_worldX = static_cast<int32_t>(std::lround(pos.x() / kSceneScale));
+      m_monitor->m_worldY = static_cast<int32_t>(std::lround(pos.y() / kSceneScale));
+      return pos;
+    }
+
+    const auto result = QGraphicsRectItem::itemChange(change, value);
+    if (change == ItemPositionHasChanged && m_monitor != nullptr && m_owner != nullptr) {
+      m_owner->onMonitorLayoutEdited();
+    }
+    return result;
   }
 
 private:
   deskflow::server::DisplayRect *m_monitor = nullptr;
+  AdvancedLayoutWidget *m_owner = nullptr;
+  bool m_acceptPositionChanges = false;
 };
 
 } // namespace
@@ -64,8 +94,10 @@ AdvancedLayoutWidget::AdvancedLayoutWidget(QWidget *parent) : QWidget(parent)
   controls->addWidget(new QLabel(tr("Machine:"), this));
   controls->addWidget(m_machineCombo, 1);
 
-  auto *importButton = new QPushButton(tr("Import Local Displays"), this);
-  controls->addWidget(importButton);
+  m_importLocalButton = new QPushButton(tr("Import Local Displays"), this);
+  m_importClientButton = new QPushButton(tr("Import from Connected Client"), this);
+  controls->addWidget(m_importLocalButton);
+  controls->addWidget(m_importClientButton);
   layout->addLayout(controls);
 
   m_scene = new QGraphicsScene(this);
@@ -76,7 +108,8 @@ AdvancedLayoutWidget::AdvancedLayoutWidget(QWidget *parent) : QWidget(parent)
 
   connect(m_enableAdvanced, &QCheckBox::toggled, this, &AdvancedLayoutWidget::onAdvancedToggled);
   connect(m_machineCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &AdvancedLayoutWidget::onMachineChanged);
-  connect(importButton, &QPushButton::clicked, this, &AdvancedLayoutWidget::importLocalDisplays);
+  connect(m_importLocalButton, &QPushButton::clicked, this, &AdvancedLayoutWidget::importLocalDisplays);
+  connect(m_importClientButton, &QPushButton::clicked, this, &AdvancedLayoutWidget::importConnectedClientDisplays);
 }
 
 void AdvancedLayoutWidget::setKnownMachines(const QStringList &machines)
@@ -120,10 +153,10 @@ void AdvancedLayoutWidget::importLocalDisplays()
     return;
   }
 
-  machine->m_monitors.clear();
+  std::vector<deskflow::server::DisplayRect> displays;
   const auto screens = QGuiApplication::screens();
-  for (int i = 0; i < screens.size(); ++i) {
-    const QScreen *screen = screens.at(i);
+  displays.reserve(static_cast<std::size_t>(screens.size()));
+  for (const QScreen *screen : screens) {
     const QRect geo = screen->geometry();
 
     deskflow::server::DisplayRect monitor;
@@ -137,49 +170,165 @@ void AdvancedLayoutWidget::importLocalDisplays()
     monitor.m_worldY = geo.y();
     monitor.m_scale = static_cast<float>(screen->devicePixelRatio());
     monitor.m_dpi = static_cast<int32_t>(screen->logicalDotsPerInch());
-    machine->m_monitors.push_back(monitor);
+    displays.push_back(monitor);
   }
 
+  importDisplaysForCurrentMachine(displays, true);
+}
+
+void AdvancedLayoutWidget::setCurrentMachine(const QString &machineName)
+{
+  const int index = m_machineCombo->findText(machineName);
+  if (index >= 0) {
+    m_machineCombo->setCurrentIndex(index);
+  }
+}
+
+void AdvancedLayoutWidget::importDisplaysForMachine(
+    const QString &machineName, const std::vector<deskflow::server::DisplayRect> &displays, bool overwrite
+)
+{
+  setCurrentMachine(machineName);
+  importDisplaysForCurrentMachine(displays, overwrite);
+}
+
+void AdvancedLayoutWidget::importConnectedClientDisplays()
+{
+  Q_EMIT requestClientDisplayImport(m_machineCombo->currentText(), true);
+}
+
+void AdvancedLayoutWidget::importDisplaysForCurrentMachine(
+    const std::vector<deskflow::server::DisplayRect> &displays, bool overwrite
+)
+{
+  auto *machine = currentMachine();
+  if (machine == nullptr || displays.empty()) {
+    return;
+  }
+
+  if (!machine->m_monitors.empty() && !overwrite) {
+    return;
+  }
+
+  machine->m_monitors = displays;
   refreshScene();
   Q_EMIT layoutChanged();
+}
+
+void AdvancedLayoutWidget::onMonitorLayoutEdited()
+{
+  Q_EMIT layoutChanged();
+}
+
+QPointF AdvancedLayoutWidget::snapMonitorPosition(
+    const deskflow::server::DisplayRect *movingMonitor, const QPointF &proposedPos
+) const
+{
+  if (movingMonitor == nullptr) {
+    return proposedPos;
+  }
+
+  const int32_t proposedX = static_cast<int32_t>(std::lround(proposedPos.x() / kSceneScale));
+  const int32_t proposedY = static_cast<int32_t>(std::lround(proposedPos.y() / kSceneScale));
+  const int32_t proposedRight = proposedX + movingMonitor->m_width;
+  const int32_t proposedBottom = proposedY + movingMonitor->m_height;
+
+  int32_t snappedX = proposedX;
+  int32_t snappedY = proposedY;
+  int32_t bestDx = kSnapDistance + 1;
+  int32_t bestDy = kSnapDistance + 1;
+
+  auto intervalsOverlap = [](int32_t startA, int32_t endA, int32_t startB, int32_t endB) {
+    return std::max(startA, startB) < std::min(endA, endB);
+  };
+
+  auto considerX = [&](int32_t candidateX, const deskflow::server::DisplayRect &other) {
+    if (!intervalsOverlap(proposedY, proposedBottom, other.m_worldY, other.m_worldY + other.m_height)) {
+      return;
+    }
+    const int32_t dx = std::abs(candidateX - proposedX);
+    if (dx < bestDx) {
+      bestDx = dx;
+      snappedX = candidateX;
+    }
+  };
+
+  auto considerY = [&](int32_t candidateY, const deskflow::server::DisplayRect &other) {
+    if (!intervalsOverlap(proposedX, proposedRight, other.m_worldX, other.m_worldX + other.m_width)) {
+      return;
+    }
+    const int32_t dy = std::abs(candidateY - proposedY);
+    if (dy < bestDy) {
+      bestDy = dy;
+      snappedY = candidateY;
+    }
+  };
+
+  for (const auto &machine : m_layout.m_machines) {
+    for (const auto &other : machine.m_monitors) {
+      if (&other == movingMonitor) {
+        continue;
+      }
+
+      considerX(other.m_worldX - movingMonitor->m_width, other);
+      considerX(other.m_worldX + other.m_width, other);
+      considerX(other.m_worldX, other);
+      considerX(other.m_worldX + other.m_width - movingMonitor->m_width, other);
+
+      considerY(other.m_worldY - movingMonitor->m_height, other);
+      considerY(other.m_worldY + other.m_height, other);
+      considerY(other.m_worldY, other);
+      considerY(other.m_worldY + other.m_height - movingMonitor->m_height, other);
+    }
+  }
+
+  return QPointF(snappedX * kSceneScale, snappedY * kSceneScale);
 }
 
 void AdvancedLayoutWidget::refreshScene()
 {
   m_scene->clear();
 
-  auto *machine = currentMachine();
-  if (machine == nullptr) {
-    return;
-  }
-
   int32_t minX = 0;
   int32_t minY = 0;
   int32_t maxX = 1920;
   int32_t maxY = 1080;
   bool first = true;
-  for (const auto &monitor : machine->m_monitors) {
-    if (first) {
-      minX = monitor.m_worldX;
-      minY = monitor.m_worldY;
-      maxX = monitor.m_worldX + monitor.m_width;
-      maxY = monitor.m_worldY + monitor.m_height;
-      first = false;
-    } else {
-      minX = std::min(minX, monitor.m_worldX);
-      minY = std::min(minY, monitor.m_worldY);
-      maxX = std::max(maxX, monitor.m_worldX + monitor.m_width);
-      maxY = std::max(maxY, monitor.m_worldY + monitor.m_height);
+  for (const auto &machine : m_layout.m_machines) {
+    for (const auto &monitor : machine.m_monitors) {
+      if (first) {
+        minX = monitor.m_worldX;
+        minY = monitor.m_worldY;
+        maxX = monitor.m_worldX + monitor.m_width;
+        maxY = monitor.m_worldY + monitor.m_height;
+        first = false;
+      } else {
+        minX = std::min(minX, monitor.m_worldX);
+        minY = std::min(minY, monitor.m_worldY);
+        maxX = std::max(maxX, monitor.m_worldX + monitor.m_width);
+        maxY = std::max(maxY, monitor.m_worldY + monitor.m_height);
+      }
     }
   }
 
-  const qreal scale = 0.15;
-  m_scene->setSceneRect(minX * scale - 20, minY * scale - 20, (maxX - minX + 40) * scale, (maxY - minY + 40) * scale);
+  constexpr int32_t padding = 320;
+  m_scene->setSceneRect(
+      (minX - padding) * kSceneScale, (minY - padding) * kSceneScale, (maxX - minX + padding * 2) * kSceneScale,
+      (maxY - minY + padding * 2) * kSceneScale
+  );
 
   int colorIndex = 0;
-  for (auto &monitor : machine->m_monitors) {
-    const QColor colors[] = {QColor(70, 130, 180), QColor(60, 179, 113), QColor(205, 92, 92), QColor(218, 165, 32)};
-    addMonitorToScene(monitor, colors[colorIndex++ % 4]);
+  const QString currentMachineName = m_machineCombo->currentText();
+  for (auto &machine : m_layout.m_machines) {
+    const bool movable = QString::fromStdString(machine.m_name) == currentMachineName;
+    for (auto &monitor : machine.m_monitors) {
+      const QColor colors[] = {QColor(70, 130, 180), QColor(60, 179, 113), QColor(205, 92, 92), QColor(218, 165, 32)};
+      QColor color = colors[colorIndex++ % 4];
+      if (!movable) {
+        color = QColor(105, 105, 105);
+      }
+      addMonitorToScene(QString::fromStdString(machine.m_name), monitor, color, movable);
+    }
   }
 }
 
@@ -219,16 +368,22 @@ const deskflow::server::MachineLayout *AdvancedLayoutWidget::currentMachine() co
   return m_layout.findMachine(m_machineCombo->currentText().toStdString());
 }
 
-void AdvancedLayoutWidget::addMonitorToScene(deskflow::server::DisplayRect &monitor, const QColor &color)
+void AdvancedLayoutWidget::addMonitorToScene(
+    const QString &machineName, deskflow::server::DisplayRect &monitor, const QColor &color, bool movable
+)
 {
-  const qreal scale = 0.15;
   auto *item = new MonitorRectItem(
-      monitor.m_worldX * scale, monitor.m_worldY * scale, monitor.m_width * scale, monitor.m_height * scale, &monitor
+      monitor.m_worldX * kSceneScale, monitor.m_worldY * kSceneScale, monitor.m_width * kSceneScale,
+      monitor.m_height * kSceneScale, &monitor, this, movable
   );
   item->setBrush(color);
+  if (!movable) {
+    item->setOpacity(0.65);
+  }
   m_scene->addItem(item);
 
-  auto *label = new QGraphicsSimpleTextItem(QString::fromStdString(monitor.m_name.empty() ? monitor.m_id : monitor.m_name));
+  const QString monitorName = QString::fromStdString(monitor.m_name.empty() ? monitor.m_id : monitor.m_name);
+  auto *label = new QGraphicsSimpleTextItem(QStringLiteral("%1 / %2").arg(machineName, monitorName));
   label->setParentItem(item);
   label->setPos(4, 4);
 }

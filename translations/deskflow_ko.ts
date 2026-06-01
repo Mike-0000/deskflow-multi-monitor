@@ -149,6 +149,10 @@ p, li { white-space: pre-wrap; }
         <source>Import Local Displays</source>
         <translation type="unfinished"></translation>
     </message>
+    <message>
+        <source>Import from Connected Client</source>
+        <translation type="unfinished"></translation>
+    </message>
 </context>
 <context>
     <name>ClientConfigDialog</name>
@@ -1135,6 +1139,22 @@ Enabling this setting will disable the server config GUI.</source>
     <message>
         <source>Browse for a config file</source>
         <translation>설정 파일 찾아보기</translation>
+    </message>
+    <message>
+        <source>Import from Connected Client</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Select a connected client machine first.
+
+The server machine &quot;%1&quot; uses Import Local Displays; this button imports monitor lists reported by remote clients.</source>
+        <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>No monitor list is available for &quot;%1&quot; yet.
+
+Make sure the client is connected to this server and running the same Deskflow build (protocol 1.9) as the server, then try again.</source>
+        <translation type="unfinished"></translation>
     </message>
     <message>
         <source>Enable lock to computer at startup</source>

@@ -74,4 +74,77 @@ void DisplayLayoutConfigTests::serializeAdvancedLayoutSection()
   QVERIFY(text.find("advancedLayout = true") != std::string::npos);
 }
 
+void DisplayLayoutConfigTests::parseLayoutFromGeneratedServerConfig()
+{
+  const char *configText = R"(
+section: screens
+	DESKTOP-U00QJVN:
+	MikePC:
+end
+section: links
+	DESKTOP-U00QJVN:
+		up = MikePC
+	MikePC:
+		down = DESKTOP-U00QJVN
+end
+section: display_layouts
+	advancedLayout = false
+	MikePC:
+		65537:
+			id = 65537
+			name = 65537
+			worldX = 0
+			worldY = 0
+			width = 2560
+			height = 1440
+			localX = 0
+			localY = 0
+	DESKTOP-U00QJVN:
+		AW2725DF:
+			id = AW2725DF
+			name = AW2725DF
+			worldX = -1294
+			worldY = -147
+			width = 2560
+			height = 1440
+			localX = 0
+			localY = 0
+		LG SDQHD:
+			id = LG SDQHD
+			name = LG SDQHD
+			worldX = 1266
+			worldY = -433
+			width = 1707
+			height = 1920
+			localX = 2560
+			localY = 16
+			scale = 1.5
+end
+section: options
+	clipboardSharing = true
+	clipboardSharingSize = true
+	relativeMouseMoves = false
+	switchCorners = none
+	switchCornerSize = 0
+	win32KeepForeground = false
+	address =
+end
+)";
+
+  std::istringstream input(configText);
+  Config config(nullptr);
+  input >> config;
+
+  const auto *server = config.getWorkspaceLayout().findMachine("DESKTOP-U00QJVN");
+  QVERIFY(server != nullptr);
+  QCOMPARE(server->m_monitors.size(), 2u);
+  QCOMPARE(server->m_monitors.back().m_id, std::string("LG SDQHD"));
+
+  std::ostringstream output;
+  output << config;
+  const std::string text = output.str();
+  QVERIFY(text.find("clipboardSharingSize = true") == std::string::npos);
+  QVERIFY(text.find("clipboardSharingSize = 3072") != std::string::npos);
+}
+
 QTEST_MAIN(DisplayLayoutConfigTests)

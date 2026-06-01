@@ -26,6 +26,10 @@
 #include "server/DisplayLayout.h"
 #include "server/PrimaryClient.h"
 
+#include "common/Settings.h"
+
+#include <fstream>
+
 #ifdef _WIN32
 #include <algorithm>
 #include <array>
@@ -222,6 +226,81 @@ bool Server::setConfig(const ServerConfig &config)
   }
 
   return true;
+}
+
+namespace {
+
+void persistServerConfigFile(const deskflow::server::Config &config)
+{
+  const QString path = Settings::serverConfigFile();
+#if defined(Q_OS_WIN)
+  std::ofstream out(path.toStdWString(), std::ios::trunc);
+#else
+  std::ofstream out(path.toStdString(), std::ios::trunc);
+#endif
+  if (!out) {
+    LOG_WARN("failed to write server configuration \"%s\"", path.toUtf8().constData());
+    return;
+  }
+
+  out << config;
+  if (!out) {
+    LOG_WARN("failed to serialize server configuration \"%s\"", path.toUtf8().constData());
+  }
+}
+
+} // namespace
+
+void Server::mergeReportedClientDisplays(
+    const std::string &clientName, const std::vector<DisplayRect> &displays, bool overwrite
+)
+{
+  if (displays.empty() || m_config == nullptr) {
+    return;
+  }
+
+  auto &layout = m_config->getWorkspaceLayout();
+  MachineLayout *machine = layout.findMachine(clientName);
+  if (machine == nullptr) {
+    MachineLayout entry;
+    entry.m_name = clientName;
+    layout.m_machines.push_back(entry);
+    machine = &layout.m_machines.back();
+  }
+
+  std::vector<DisplayRect> mergedDisplays = displays;
+  if (!overwrite && !machine->m_monitors.empty()) {
+    for (std::size_t i = 0; i < mergedDisplays.size(); ++i) {
+      DisplayRect &display = mergedDisplays[i];
+      const DisplayRect *existing = nullptr;
+
+      if (!display.m_id.empty()) {
+        for (const auto &monitor : machine->m_monitors) {
+          if (monitor.m_id == display.m_id) {
+            existing = &monitor;
+            break;
+          }
+        }
+      }
+
+      if (existing == nullptr && display.m_id.empty() && i < machine->m_monitors.size() &&
+          machine->m_monitors[i].m_id.empty() &&
+          machine->m_monitors[i].m_width == display.m_width && machine->m_monitors[i].m_height == display.m_height) {
+        existing = &machine->m_monitors[i];
+      }
+
+      if (existing != nullptr) {
+        display.m_worldX = existing->m_worldX;
+        display.m_worldY = existing->m_worldY;
+      }
+    }
+  }
+
+  machine->m_monitors = mergedDisplays;
+  LOG_INFO(
+      "updated display layout for \"%s\" with %zu monitor(s)", clientName.c_str(), machine->m_monitors.size()
+  );
+  persistServerConfigFile(*m_config);
 }
 
 void Server::adoptClient(BaseClientProxy *client)
