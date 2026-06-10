@@ -200,8 +200,10 @@ PlatformDisplayList Client::enumerateDisplays() const
 void Client::enter(int32_t xAbs, int32_t yAbs, uint32_t, KeyModifierMask mask, bool)
 {
   m_active = true;
-  m_screen->mouseMove(xAbs, yAbs);
   m_screen->enter(mask);
+  // Move after entering so platform-specific cursor hiding/capture cleanup
+  // cannot overwrite the requested edge coordinate.
+  m_screen->mouseMove(xAbs, yAbs);
 }
 
 bool Client::leave()

@@ -25,13 +25,15 @@
 #include "server/ClientProxyUnknown.h"
 #include "server/DisplayLayout.h"
 #include "server/PrimaryClient.h"
+#include "server/SwitchDecision.h"
 
 #include "common/Settings.h"
 
+#include <algorithm>
 #include <fstream>
+#include <vector>
 
 #ifdef _WIN32
-#include <algorithm>
 #include <array>
 #endif
 #include <cmath>
@@ -400,20 +402,27 @@ uint32_t Server::getActivePrimarySides() const
 {
   using enum DirectionMask;
   using enum Direction;
+  if (isLockedToScreenServer()) {
+    return 0;
+  }
+
+  if (m_config->hasAdvancedLayout()) {
+    GeometryRouter router(m_config->getWorkspaceLayout());
+    return router.getActiveSidesForMachine(getName(m_primaryClient));
+  }
+
   uint32_t sides = 0;
-  if (!isLockedToScreenServer()) {
-    if (hasAnyNeighbor(m_primaryClient, Left)) {
-      sides |= static_cast<int>(LeftMask);
-    }
-    if (hasAnyNeighbor(m_primaryClient, Right)) {
-      sides |= static_cast<int>(RightMask);
-    }
-    if (hasAnyNeighbor(m_primaryClient, Top)) {
-      sides |= static_cast<int>(TopMask);
-    }
-    if (hasAnyNeighbor(m_primaryClient, Bottom)) {
-      sides |= static_cast<int>(BottomMask);
-    }
+  if (hasAnyNeighbor(m_primaryClient, Left)) {
+    sides |= static_cast<int>(LeftMask);
+  }
+  if (hasAnyNeighbor(m_primaryClient, Right)) {
+    sides |= static_cast<int>(RightMask);
+  }
+  if (hasAnyNeighbor(m_primaryClient, Top)) {
+    sides |= static_cast<int>(TopMask);
+  }
+  if (hasAnyNeighbor(m_primaryClient, Bottom)) {
+    sides |= static_cast<int>(BottomMask);
   }
   return sides;
 }
@@ -502,6 +511,8 @@ void Server::switchScreen(BaseClientProxy *dst, int32_t x, int32_t y, bool forSc
   // stop waiting to switch
   stopSwitch();
 
+  const bool switchingFromPrimaryToSecondary = m_active == m_primaryClient && dst != m_primaryClient;
+
   // record new position
   m_x = x;
   m_y = y;
@@ -509,6 +520,7 @@ void Server::switchScreen(BaseClientProxy *dst, int32_t x, int32_t y, bool forSc
   m_yDelta = 0;
   m_xDelta2 = 0;
   m_yDelta2 = 0;
+  m_dropSecondaryWarpDelta = switchingFromPrimaryToSecondary;
 
   // wrapping means leaving the active screen and entering it again.
   // since that's a waste of time we skip that and just warp the
@@ -836,7 +848,7 @@ BaseClientProxy *Server::mapToNeighborAdvanced(BaseClientProxy *src, Direction s
 
   x = transition->m_dstX;
   y = transition->m_dstY;
-  avoidJumpZone(dst, srcSide, x, y);
+  avoidAdvancedJumpZone(dst, srcSide, x, y);
   return dst;
 }
 
@@ -910,25 +922,14 @@ bool Server::onMouseMovePrimaryAdvanced(int32_t x, int32_t y)
     return false;
   }
 
-  std::array<Direction, 2> dirs = {dirh, dirv};
-  std::array<int32_t, 2> xs = {xh, x};
-  std::array<int32_t, 2> ys = {y, yv};
-  for (int i = 0; i < 2; ++i) {
-    Direction dir = dirs.at(i);
-    if (dir == NoDirection) {
-      continue;
-    }
-    x = xs.at(i);
-    y = ys.at(i);
-    BaseClientProxy *newScreen = mapToNeighborAdvanced(m_active, dir, x, y);
-    if (isSwitchOkay(newScreen, dir, x, y, xc, yc)) {
-      switchScreen(newScreen, x, y, false);
-      return true;
-    }
+  std::vector<SwitchCandidate> candidates;
+  if (dirh != NoDirection) {
+    candidates.push_back(makePrimarySwitchCandidate(dirh, xh, y, xc, yc, true));
   }
-
-  noSwitch(x, y);
-  return false;
+  if (dirv != NoDirection) {
+    candidates.push_back(makePrimarySwitchCandidate(dirv, x, yv, xc, yc, true));
+  }
+  return tryPrimarySwitchFromCandidates(candidates, x, y, true);
 }
 
 void Server::onMouseMoveSecondaryAdvanced(int32_t dx, int32_t dy)
@@ -952,6 +953,16 @@ void Server::onMouseMoveSecondaryAdvanced(int32_t dx, int32_t dy)
 
   const int32_t xOld = m_x;
   const int32_t yOld = m_y;
+  if (m_dropSecondaryWarpDelta) {
+    m_dropSecondaryWarpDelta = false;
+    const DisplayRect *currentMonitor = GeometryRouter::findMonitorAtLocal(*machine, xOld, yOld);
+    if (currentMonitor != nullptr &&
+        SwitchGate::shouldDropSecondaryWarpDelta(dx, dy, currentMonitor->m_width, currentMonitor->m_height)) {
+      LOG_DEBUG("dropped initial secondary warp delta: %+d,%+d", dx, dy);
+      return;
+    }
+  }
+
   m_xDelta2 = m_xDelta;
   m_yDelta2 = m_yDelta;
   m_xDelta = dx;
@@ -1054,102 +1065,352 @@ void Server::avoidJumpZone(const BaseClientProxy *dst, Direction dir, int32_t &x
   }
 }
 
-bool Server::isSwitchOkay(
-    BaseClientProxy *newScreen, Direction dir, int32_t x, int32_t y, int32_t xActive, int32_t yActive
-)
+void Server::avoidAdvancedJumpZone(const BaseClientProxy *dst, Direction dir, int32_t &x, int32_t &y) const
 {
-  LOG_VERBOSE("try to leave \"%s\" on %s", getName(m_active).c_str(), Config::dirName(dir));
-
-  // is there a neighbor?
-  if (newScreen == nullptr) {
-    // there's no neighbor.  we don't want to switch and we don't
-    // want to try to switch later.
-    LOG_VERBOSE("no neighbor %s", Config::dirName(dir));
-    stopSwitch();
-    return false;
+  if (dst == nullptr || dir == Direction::NoDirection) {
+    return;
   }
 
-  // should we switch or not?
-  bool preventSwitch = false;
-  bool allowSwitch = false;
+  const int32_t inset = std::max<int32_t>(1, getJumpZoneSize(dst) + 1);
 
-  // note if the switch direction has changed.  save the new
-  // direction and screen if so.
-  bool isNewDirection = (dir != m_switchDir);
-  if (isNewDirection || m_switchScreen == nullptr) {
-    m_switchDir = dir;
-    m_switchScreen = newScreen;
+  switch (dir) {
+  case Direction::Left:
+    x -= inset;
+    break;
+  case Direction::Right:
+    x += inset;
+    break;
+  case Direction::Top:
+    y -= inset;
+    break;
+  case Direction::Bottom:
+    y += inset;
+    break;
+  case Direction::NoDirection:
+    break;
   }
 
-  // is this a double tap and do we care?
-  if (!allowSwitch && m_switchTwoTapDelay > 0.0) {
-    if (isNewDirection || !isSwitchTwoTapStarted() || !shouldSwitchTwoTap()) {
-      // tapping a different or new edge or second tap not
-      // fast enough.  prepare for second tap.
-      preventSwitch = true;
-      startSwitchTwoTap();
-    } else {
-      // got second tap
-      allowSwitch = true;
+  const MachineLayout *machine = m_config->getWorkspaceLayout().findMachine(getName(dst));
+  const DisplayRect *monitor = machine == nullptr ? nullptr : machine->findMonitorAtLocal(x, y);
+  if (monitor == nullptr && machine != nullptr) {
+    for (const auto &candidate : machine->m_monitors) {
+      int32_t clampedX = x;
+      int32_t clampedY = y;
+      GeometryRouter::clampToMonitor(candidate, clampedX, clampedY);
+      if (std::abs(clampedX - x) <= inset && std::abs(clampedY - y) <= inset) {
+        monitor = &candidate;
+        break;
+      }
     }
   }
 
-  // if waiting before a switch then prepare to switch later
-  if (!allowSwitch && m_switchWaitDelay > 0.0) {
-    if (isNewDirection || !isSwitchWaitStarted()) {
-      startSwitchWait(x, y);
-    }
-    preventSwitch = true;
+  if (monitor != nullptr) {
+    GeometryRouter::clampToMonitor(*monitor, x, y);
+    return;
   }
 
-  // are we in a locked corner?  first check if screen has the option set
-  // and, if not, check the global options.
-  const Config::ScreenOptions *options = m_config->getOptions(getName(m_active));
+  int32_t dx = 0;
+  int32_t dy = 0;
+  int32_t dw = 0;
+  int32_t dh = 0;
+  dst->getShape(dx, dy, dw, dh);
+  x = std::clamp(x, dx, dx + dw - 1);
+  y = std::clamp(y, dy, dy + dh - 1);
+}
+
+SwitchGateSettings Server::buildSwitchGateSettings(const std::string &activeName) const
+{
+  SwitchGateSettings settings;
+  settings.m_switchWaitDelay = m_switchWaitDelay;
+  settings.m_switchTwoTapDelay = m_switchTwoTapDelay;
+  settings.m_switchTwoTapZone = m_switchTwoTapZone;
+  settings.m_jumpZoneSize = m_primaryClient->getJumpZoneSize();
+  settings.m_switchNeedsShift = m_switchNeedsShift;
+  settings.m_switchNeedsControl = m_switchNeedsControl;
+  settings.m_switchNeedsAlt = m_switchNeedsAlt;
+
+  const Config::ScreenOptions *options = m_config->getOptions(activeName);
   if (options == nullptr || !options->contains(kOptionScreenSwitchCorners)) {
     options = m_config->getOptions("");
   }
   if (options != nullptr && options->contains(kOptionScreenSwitchCorners)) {
-    // get corner mask and size
-    Config::ScreenOptions::const_iterator i = options->find(kOptionScreenSwitchCorners);
-    auto corners = static_cast<uint32_t>(i->second);
-    i = options->find(kOptionScreenSwitchCornerSize);
-    int32_t size = 0;
-    if (i != options->end()) {
-      size = i->second;
-    }
-
-    // see if we're in a locked corner
-    if ((getCorner(m_active, xActive, yActive, size) & corners) != 0) {
-      // yep, no switching
-      LOG_VERBOSE("locked in corner");
-      preventSwitch = true;
-      stopSwitch();
+    settings.m_lockedCorners = static_cast<uint32_t>(options->find(kOptionScreenSwitchCorners)->second);
+    if (const auto sizeIt = options->find(kOptionScreenSwitchCornerSize); sizeIt != options->end()) {
+      settings.m_cornerSize = sizeIt->second;
     }
   }
 
-  // ignore if mouse is locked to screen and don't try to switch later
-  if (!preventSwitch && isLockedToScreen()) {
-    LOG_VERBOSE("locked to screen");
-    preventSwitch = true;
-    stopSwitch();
+  return settings;
+}
+
+SwitchGateState Server::readSwitchGateState() const
+{
+  SwitchGateState state;
+  state.m_switchDir = m_switchDir;
+  state.m_hasPendingTarget = m_switchScreen != nullptr;
+  state.m_switchWaitStarted = isSwitchWaitStarted();
+  state.m_switchWaitX = m_switchWaitX;
+  state.m_switchWaitY = m_switchWaitY;
+  state.m_switchTwoTapEngaged = m_switchTwoTapEngaged;
+  state.m_switchTwoTapArmed = m_switchTwoTapArmed;
+  return state;
+}
+
+void Server::applySwitchGateState(const SwitchGateState &state, BaseClientProxy *pendingScreen)
+{
+  m_switchDir = state.m_switchDir;
+  m_switchTwoTapEngaged = state.m_switchTwoTapEngaged;
+  m_switchTwoTapArmed = state.m_switchTwoTapArmed;
+  m_switchWaitX = state.m_switchWaitX;
+  m_switchWaitY = state.m_switchWaitY;
+
+  if (state.m_hasPendingTarget) {
+    m_switchScreen = pendingScreen;
+  } else {
+    m_switchScreen = nullptr;
+    m_switchDir = Direction::NoDirection;
+    stopSwitchTwoTap();
+    stopSwitchWait();
+    return;
   }
 
-  // check for optional needed modifiers
-  if (KeyModifierMask mods = this->m_primaryClient->getToggleMask();
-      !preventSwitch && ((this->m_switchNeedsShift && ((mods & KeyModifierShift) != KeyModifierShift)) ||
-                         (this->m_switchNeedsControl && ((mods & KeyModifierControl) != KeyModifierControl)) ||
-                         (this->m_switchNeedsAlt && ((mods & KeyModifierAlt) != KeyModifierAlt)))) {
-    LOG_VERBOSE("need modifiers to switch");
-    preventSwitch = true;
-    stopSwitch();
+  if (state.m_switchWaitStarted && !isSwitchWaitStarted()) {
+    startSwitchWait(state.m_switchWaitX, state.m_switchWaitY);
+  } else if (!state.m_switchWaitStarted && isSwitchWaitStarted()) {
+    stopSwitchWait();
+  }
+}
+
+SwitchGateInput Server::buildSwitchGateInput(
+    BaseClientProxy *dst, Direction dir, int32_t x, int32_t y, int32_t xActive, int32_t yActive, bool commitOnly
+) const
+{
+  SwitchGateInput input;
+  input.m_hasNeighbor = dst != nullptr;
+  input.m_direction = dir;
+  input.m_x = x;
+  input.m_y = y;
+  input.m_xActive = xActive;
+  input.m_yActive = yActive;
+  input.m_lockedToScreen = isLockedToScreen();
+  input.m_modifiers = m_primaryClient->getToggleMask();
+  input.m_xDelta = m_xDelta;
+  input.m_yDelta = m_yDelta;
+  input.m_xDelta2 = m_xDelta2;
+  input.m_yDelta2 = m_yDelta2;
+  input.m_twoTapElapsed = m_switchTwoTapTimer.getTime();
+  input.m_commitOnly = commitOnly;
+  m_active->getShape(input.m_shapeX, input.m_shapeY, input.m_shapeW, input.m_shapeH);
+  getSwitchCornerRect(xActive, yActive, input.m_cornerRectX, input.m_cornerRectY, input.m_cornerRectW, input.m_cornerRectH);
+  return input;
+}
+
+void Server::getSwitchCornerRect(int32_t xActive, int32_t yActive, int32_t &ax, int32_t &ay, int32_t &aw, int32_t &ah)
+    const
+{
+  if (m_config->hasAdvancedLayout()) {
+    const MachineLayout *machine = m_config->getWorkspaceLayout().findMachine(getName(m_active));
+    if (machine != nullptr) {
+      const DisplayRect *monitor = machine->findMonitorAtLocal(xActive, yActive);
+      if (monitor != nullptr) {
+        ax = monitor->m_localX;
+        ay = monitor->m_localY;
+        aw = monitor->m_width;
+        ah = monitor->m_height;
+        return;
+      }
+    }
   }
 
-  return !preventSwitch;
+  m_active->getShape(ax, ay, aw, ah);
+}
+
+bool Server::isCursorOnPendingSwitchEdge() const
+{
+  if (m_switchDir == Direction::NoDirection || m_active == nullptr) {
+    return false;
+  }
+
+  if (m_config->hasAdvancedLayout()) {
+    const MachineLayout *machine = m_config->getWorkspaceLayout().findMachine(getName(m_active));
+    if (machine == nullptr) {
+      return false;
+    }
+
+    const DisplayRect *monitor = machine->findMonitorAtLocal(m_x, m_y);
+    if (monitor == nullptr) {
+      monitor = GeometryRouter::findMonitorAtLocal(*machine, m_x, m_y);
+    }
+    if (monitor == nullptr) {
+      return false;
+    }
+
+    const int32_t zoneSize = getJumpZoneSize(m_active);
+    switch (m_switchDir) {
+    case Direction::Left:
+      return m_x <= monitor->m_localX + zoneSize;
+    case Direction::Right:
+      return m_x >= monitor->m_localX + monitor->m_width - 1 - zoneSize;
+    case Direction::Top:
+      return m_y <= monitor->m_localY + zoneSize;
+    case Direction::Bottom:
+      return m_y >= monitor->m_localY + monitor->m_height - 1 - zoneSize;
+    case Direction::NoDirection:
+      break;
+    }
+    return false;
+  }
+
+  int32_t ax;
+  int32_t ay;
+  int32_t aw;
+  int32_t ah;
+  m_active->getShape(ax, ay, aw, ah);
+  const int32_t zoneSize = getJumpZoneSize(m_active);
+  switch (m_switchDir) {
+  case Direction::Left:
+    return m_x < ax + zoneSize;
+  case Direction::Right:
+    return m_x >= ax + aw - zoneSize;
+  case Direction::Top:
+    return m_y < ay + zoneSize;
+  case Direction::Bottom:
+    return m_y >= ay + ah - zoneSize;
+  case Direction::NoDirection:
+    break;
+  }
+  return false;
+}
+
+SwitchCandidate Server::makePrimarySwitchCandidate(
+    Direction dir, int32_t probeX, int32_t probeY, int32_t xActive, int32_t yActive, bool advanced
+) const
+{
+  SwitchCandidate candidate;
+  candidate.m_direction = dir;
+  candidate.m_probeX = probeX;
+  candidate.m_probeY = probeY;
+  candidate.m_xActive = xActive;
+  candidate.m_yActive = yActive;
+
+  if (dir == Direction::NoDirection) {
+    return candidate;
+  }
+
+  int32_t x = probeX;
+  int32_t y = probeY;
+  BaseClientProxy *dst = advanced ? mapToNeighborAdvanced(m_active, dir, x, y) : mapToNeighbor(m_active, dir, x, y);
+  if (dst == nullptr) {
+    return candidate;
+  }
+
+  candidate.m_valid = true;
+  candidate.m_dstMachine = getName(dst);
+  candidate.m_dstX = x;
+  candidate.m_dstY = y;
+  return candidate;
+}
+
+bool Server::tryApplySwitchCandidate(const SwitchCandidate &candidate, BaseClientProxy *dst)
+{
+  if (dst == nullptr) {
+    return false;
+  }
+
+  if (isSwitchOkay(dst, candidate.m_direction, candidate.m_dstX, candidate.m_dstY, candidate.m_xActive, candidate.m_yActive)) {
+    switchScreen(dst, candidate.m_dstX, candidate.m_dstY, false);
+    return true;
+  }
+  return false;
+}
+
+bool Server::tryPrimarySwitchFromCandidates(
+    const std::vector<SwitchCandidate> &candidates, int32_t x, int32_t y, bool advanced
+)
+{
+  const auto best = SwitchGate::pickBestCandidate(candidates, m_xDelta, m_yDelta);
+  if (!best.has_value()) {
+    noSwitch(x, y);
+    return false;
+  }
+
+  BaseClientProxy *dst = findClientByName(best->m_dstMachine);
+  if (dst == nullptr) {
+    noSwitch(x, y);
+    return false;
+  }
+
+  if (tryApplySwitchCandidate(*best, dst)) {
+    return true;
+  }
+
+  if (!advanced) {
+    return false;
+  }
+
+  noSwitch(x, y);
+  return false;
+}
+
+bool Server::isSwitchOkay(
+    BaseClientProxy *newScreen, Direction dir, int32_t x, int32_t y, int32_t xActive, int32_t yActive, bool commitOnly
+)
+{
+  LOG_VERBOSE("try to leave \"%s\" on %s", getName(m_active).c_str(), Config::dirName(dir));
+
+  if (newScreen == nullptr) {
+    LOG_VERBOSE("no neighbor %s", Config::dirName(dir));
+    SwitchGateState state = readSwitchGateState();
+    SwitchGate::clearPending(state);
+    applySwitchGateState(state, nullptr);
+    LOG_VERBOSE("switch rejected: %s", switchGateReasonName(SwitchGateReason::NoNeighbor));
+    return false;
+  }
+
+  if (dir != m_switchDir || m_switchScreen == nullptr) {
+    m_switchDir = dir;
+    m_switchScreen = newScreen;
+  }
+
+  const SwitchGateSettings settings = buildSwitchGateSettings(getName(m_active));
+  SwitchGateState state = readSwitchGateState();
+  const bool wasTwoTapEngaged = state.m_switchTwoTapEngaged;
+  state.m_hasPendingTarget = true;
+  state.m_switchDir = dir;
+  const SwitchGateInput input = buildSwitchGateInput(newScreen, dir, x, y, xActive, yActive, commitOnly);
+  const SwitchGateResult result = SwitchGate::evaluate(state, settings, input);
+  applySwitchGateState(state, newScreen);
+  if (!wasTwoTapEngaged && m_switchTwoTapEngaged) {
+    m_switchTwoTapTimer.reset();
+    LOG_VERBOSE("waiting for second tap");
+  }
+
+  if (result.m_reason != SwitchGateReason::None) {
+    LOG_VERBOSE("switch gate: %s", switchGateReasonName(result.m_reason));
+  }
+
+  if (result.m_outcome == SwitchGateOutcome::Allow) {
+    stopSwitch();
+    return true;
+  }
+
+  if (result.m_outcome == SwitchGateOutcome::Reject &&
+      (result.m_reason == SwitchGateReason::DeadCorner || result.m_reason == SwitchGateReason::LockedToScreen ||
+       result.m_reason == SwitchGateReason::MissingModifier || result.m_reason == SwitchGateReason::NoNeighbor)) {
+    m_switchScreen = nullptr;
+    m_switchDir = Direction::NoDirection;
+  }
+
+  return false;
 }
 
 void Server::noSwitch(int32_t x, int32_t y)
 {
-  armSwitchTwoTap(x, y);
+  SwitchGateState state = readSwitchGateState();
+  const SwitchGateInput input = buildSwitchGateInput(m_switchScreen, m_switchDir, x, y, x, y, false);
+  SwitchGate::armTwoTap(state, buildSwitchGateSettings(getName(m_active)), input);
+  m_switchTwoTapEngaged = state.m_switchTwoTapEngaged;
+  m_switchTwoTapArmed = state.m_switchTwoTapArmed;
   stopSwitchWait();
 }
 
@@ -1173,50 +1434,11 @@ void Server::startSwitchTwoTap()
 
 void Server::armSwitchTwoTap(int32_t x, int32_t y)
 {
-  if (m_switchTwoTapEngaged) {
-    if (m_switchTwoTapTimer.getTime() > m_switchTwoTapDelay) {
-      // second tap took too long.  disengage.
-      stopSwitchTwoTap();
-    } else if (!m_switchTwoTapArmed) {
-      // still time for a double tap.  see if we left the tap
-      // zone and, if so, arm the two tap.
-      int32_t ax;
-      int32_t ay;
-      int32_t aw;
-      int32_t ah;
-      m_active->getShape(ax, ay, aw, ah);
-      int32_t tapZone = m_primaryClient->getJumpZoneSize();
-      if (tapZone < m_switchTwoTapZone) {
-        tapZone = m_switchTwoTapZone;
-      }
-      if (x >= ax + tapZone && x < ax + aw - tapZone && y >= ay + tapZone && y < ay + ah - tapZone) {
-        // win32 can generate bogus mouse events that appear to
-        // move in the opposite direction that the mouse actually
-        // moved.  try to ignore that crap here.
-        switch (m_switchDir) {
-          using enum Direction;
-        case Left:
-          m_switchTwoTapArmed = (m_xDelta > 0 && m_xDelta2 > 0);
-          break;
-
-        case Right:
-          m_switchTwoTapArmed = (m_xDelta < 0 && m_xDelta2 < 0);
-          break;
-
-        case Top:
-          m_switchTwoTapArmed = (m_yDelta > 0 && m_yDelta2 > 0);
-          break;
-
-        case Bottom:
-          m_switchTwoTapArmed = (m_yDelta < 0 && m_yDelta2 < 0);
-          break;
-
-        default:
-          break;
-        }
-      }
-    }
-  }
+  SwitchGateState state = readSwitchGateState();
+  const SwitchGateInput input = buildSwitchGateInput(m_switchScreen, m_switchDir, x, y, x, y, false);
+  SwitchGate::armTwoTap(state, buildSwitchGateSettings(getName(m_active)), input);
+  m_switchTwoTapEngaged = state.m_switchTwoTapEngaged;
+  m_switchTwoTapArmed = state.m_switchTwoTapArmed;
 }
 
 void Server::stopSwitchTwoTap()
@@ -1263,52 +1485,12 @@ uint32_t Server::getCorner(const BaseClientProxy *client, int32_t x, int32_t y, 
 {
   assert(client != nullptr);
 
-  // get client screen shape
   int32_t ax;
   int32_t ay;
   int32_t aw;
   int32_t ah;
   client->getShape(ax, ay, aw, ah);
-
-  // check for x,y on the left or right
-  int32_t xSide;
-  if (x <= ax) {
-    xSide = -1;
-  } else if (x >= ax + aw - 1) {
-    xSide = 1;
-  } else {
-    xSide = 0;
-  }
-
-  // check for x,y on the top or bottom
-  int32_t ySide;
-  if (y <= ay) {
-    ySide = -1;
-  } else if (y >= ay + ah - 1) {
-    ySide = 1;
-  } else {
-    ySide = 0;
-  }
-
-  // if against the left or right then check if y is within size
-  if (xSide != 0) {
-    if (y < ay + size) {
-      return (xSide < 0) ? s_topLeftCornerMask : s_topRightCornerMask;
-    } else if (y >= ay + ah - size) {
-      return (xSide < 0) ? s_bottomLeftCornerMask : s_bottomRightCornerMask;
-    }
-  }
-
-  // if against the left or right then check if y is within size
-  if (ySide != 0) {
-    if (x < ax + size) {
-      return (ySide < 0) ? s_topLeftCornerMask : s_bottomLeftCornerMask;
-    } else if (x >= ax + aw - size) {
-      return (ySide < 0) ? s_topRightCornerMask : s_bottomRightCornerMask;
-    }
-  }
-
-  return s_noCornerMask;
+  return SwitchGate::getCornerInRect(x, y, ax, ay, aw, ah, size);
 }
 
 void Server::stopRelativeMoves()
@@ -1571,15 +1753,42 @@ void Server::handleWheelEvent(const Event &event)
 
 void Server::handleSwitchWaitTimeout()
 {
-  // ignore if mouse is locked to screen
   if (isLockedToScreen()) {
     LOG_VERBOSE("locked to screen");
     stopSwitch();
     return;
   }
 
-  // switch screen
-  switchScreen(m_switchScreen, m_switchWaitX, m_switchWaitY, false);
+  if (m_switchScreen == nullptr || m_active == nullptr || m_switchDir == Direction::NoDirection) {
+    LOG_VERBOSE("switch gate: %s", switchGateReasonName(SwitchGateReason::StaleRoute));
+    stopSwitch();
+    return;
+  }
+
+  if (!isCursorOnPendingSwitchEdge()) {
+    LOG_VERBOSE("switch gate: %s", switchGateReasonName(SwitchGateReason::StaleRoute));
+    stopSwitch();
+    return;
+  }
+
+  int32_t x = m_switchWaitX;
+  int32_t y = m_switchWaitY;
+  BaseClientProxy *dst = m_config->hasAdvancedLayout() ? mapToNeighborAdvanced(m_active, m_switchDir, x, y)
+                                                       : mapToNeighbor(m_active, m_switchDir, x, y);
+  if (dst == nullptr || dst != m_switchScreen) {
+    LOG_VERBOSE("switch gate: %s", switchGateReasonName(SwitchGateReason::StaleRoute));
+    stopSwitch();
+    return;
+  }
+
+  int32_t xc = m_x;
+  int32_t yc = m_y;
+  if (!isSwitchOkay(dst, m_switchDir, x, y, xc, yc, true)) {
+    stopSwitch();
+    return;
+  }
+
+  switchScreen(dst, x, y, false);
 }
 
 void Server::handleClientDisconnected(BaseClientProxy *client)
@@ -1983,29 +2192,14 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
     return false;
   }
 
-  // check both horizontally and vertically
-  std::array<Direction, 2> dirs = {dirh, dirv};
-  std::array<int32_t, 2> xs = {xh, x};
-  std::array<int32_t, 2> ys = {y, yv};
-  for (int i = 0; i < 2; ++i) {
-    Direction dir = dirs.at(i);
-    if (dir == NoDirection) {
-      continue;
-    }
-    x = xs.at(i);
-    y = ys.at(i);
-    // get jump destination
-    BaseClientProxy *newScreen = mapToNeighbor(m_active, dir, x, y);
-
-    // should we switch or not?
-    if (isSwitchOkay(newScreen, dir, x, y, xc, yc)) {
-      // switch screen
-      switchScreen(newScreen, x, y, false);
-      return true;
-    }
+  std::vector<SwitchCandidate> candidates;
+  if (dirh != NoDirection) {
+    candidates.push_back(makePrimarySwitchCandidate(dirh, xh, y, xc, yc, false));
   }
-
-  return false;
+  if (dirv != NoDirection) {
+    candidates.push_back(makePrimarySwitchCandidate(dirv, x, yv, xc, yc, false));
+  }
+  return tryPrimarySwitchFromCandidates(candidates, x, y, false);
 }
 
 void Server::onMouseMoveSecondary(int32_t dx, int32_t dy)

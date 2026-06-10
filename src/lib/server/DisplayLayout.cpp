@@ -14,9 +14,11 @@ namespace deskflow::server {
 
 namespace {
 
+constexpr int32_t kExitEdgeMargin = 1;
+constexpr int32_t kExitOvershootTolerance = 256;
+
 bool isAtExitEdge(const DisplayRect &monitor, int32_t localX, int32_t localY, Direction exitDir)
 {
-  constexpr int32_t margin = 1;
   const int32_t left = monitor.m_localX;
   const int32_t right = monitor.m_localX + monitor.m_width - 1;
   const int32_t top = monitor.m_localY;
@@ -24,18 +26,98 @@ bool isAtExitEdge(const DisplayRect &monitor, int32_t localX, int32_t localY, Di
 
   switch (exitDir) {
   case Direction::Left:
-    return localX >= left - margin && localX <= left + margin && localY >= top - margin && localY <= bottom + margin;
+    return localX >= left - kExitEdgeMargin && localX <= left + kExitEdgeMargin &&
+           localY >= top - kExitEdgeMargin && localY <= bottom + kExitEdgeMargin;
   case Direction::Right:
-    return localX >= right - margin && localX <= right + margin && localY >= top - margin && localY <= bottom + margin;
+    return localX >= right - kExitEdgeMargin && localX <= right + kExitEdgeMargin &&
+           localY >= top - kExitEdgeMargin && localY <= bottom + kExitEdgeMargin;
   case Direction::Top:
-    return localY >= top - margin && localY <= top + margin && localX >= left - margin && localX <= right + margin;
+    return localY >= top - kExitEdgeMargin && localY <= top + kExitEdgeMargin &&
+           localX >= left - kExitEdgeMargin && localX <= right + kExitEdgeMargin;
   case Direction::Bottom:
-    return localY >= bottom - margin && localY <= bottom + margin && localX >= left - margin && localX <= right + margin;
+    return localY >= bottom - kExitEdgeMargin && localY <= bottom + kExitEdgeMargin &&
+           localX >= left - kExitEdgeMargin && localX <= right + kExitEdgeMargin;
   case Direction::NoDirection:
     return false;
   }
 
   return false;
+}
+
+const DisplayRect *findMonitorNearExit(const MachineLayout &machine, int32_t localX, int32_t localY, Direction exitDir)
+{
+  const DisplayRect *bestMonitor = nullptr;
+  int32_t bestDistance = kExitOvershootTolerance + 1;
+
+  auto consider = [&](const DisplayRect &monitor, bool candidate, int32_t distance) {
+    if (candidate && distance < bestDistance) {
+      bestDistance = distance;
+      bestMonitor = &monitor;
+    }
+  };
+
+  for (const auto &monitor : machine.m_monitors) {
+    const int32_t left = monitor.m_localX;
+    const int32_t right = monitor.m_localX + monitor.m_width - 1;
+    const int32_t top = monitor.m_localY;
+    const int32_t bottom = monitor.m_localY + monitor.m_height - 1;
+    const bool xOverlaps = localX >= left - kExitOvershootTolerance && localX <= right + kExitOvershootTolerance;
+    const bool yOverlaps = localY >= top - kExitOvershootTolerance && localY <= bottom + kExitOvershootTolerance;
+
+    switch (exitDir) {
+    case Direction::Left:
+      consider(
+          monitor, yOverlaps && localX <= left + kExitEdgeMargin && localX >= left - kExitOvershootTolerance,
+          std::abs(localX - left)
+      );
+      break;
+    case Direction::Right:
+      consider(
+          monitor, yOverlaps && localX >= right - kExitEdgeMargin && localX <= right + kExitOvershootTolerance,
+          std::abs(localX - right)
+      );
+      break;
+    case Direction::Top:
+      consider(
+          monitor, xOverlaps && localY <= top + kExitEdgeMargin && localY >= top - kExitOvershootTolerance,
+          std::abs(localY - top)
+      );
+      break;
+    case Direction::Bottom:
+      consider(
+          monitor, xOverlaps && localY >= bottom - kExitEdgeMargin && localY <= bottom + kExitOvershootTolerance,
+          std::abs(localY - bottom)
+      );
+      break;
+    case Direction::NoDirection:
+      break;
+    }
+  }
+
+  return bestMonitor;
+}
+
+void projectToExitEdge(const DisplayRect &monitor, Direction exitDir, int32_t &localX, int32_t &localY)
+{
+  localX = std::clamp(localX, monitor.m_localX, monitor.m_localX + monitor.m_width - 1);
+  localY = std::clamp(localY, monitor.m_localY, monitor.m_localY + monitor.m_height - 1);
+
+  switch (exitDir) {
+  case Direction::Left:
+    localX = monitor.m_localX;
+    break;
+  case Direction::Right:
+    localX = monitor.m_localX + monitor.m_width - 1;
+    break;
+  case Direction::Top:
+    localY = monitor.m_localY;
+    break;
+  case Direction::Bottom:
+    localY = monitor.m_localY + monitor.m_height - 1;
+    break;
+  case Direction::NoDirection:
+    break;
+  }
 }
 
 } // namespace
@@ -218,20 +300,11 @@ std::optional<TransitionResult> GeometryRouter::findTransition(
     return std::nullopt;
   }
 
+  bool projectedToEdge = false;
   const DisplayRect *srcMonitor = src->findMonitorAtLocal(localX, localY);
   if (srcMonitor == nullptr) {
-    // cursor may be just outside monitor bounds; find nearest monitor by edge
-    for (const auto &monitor : src->m_monitors) {
-      const int32_t left = monitor.m_localX;
-      const int32_t right = monitor.m_localX + monitor.m_width;
-      const int32_t top = monitor.m_localY;
-      const int32_t bottom = monitor.m_localY + monitor.m_height;
-
-      if (localX >= left - 1 && localX <= right && localY >= top - 1 && localY <= bottom) {
-        srcMonitor = &monitor;
-        break;
-      }
-    }
+    srcMonitor = findMonitorNearExit(*src, localX, localY, exitDir);
+    projectedToEdge = srcMonitor != nullptr;
   }
 
   if (srcMonitor == nullptr) {
@@ -244,6 +317,10 @@ std::optional<TransitionResult> GeometryRouter::findTransition(
 
   if (exitDir == Direction::NoDirection) {
     return std::nullopt;
+  }
+
+  if (projectedToEdge) {
+    projectToExitEdge(*srcMonitor, exitDir, localX, localY);
   }
 
   if (!isAtExitEdge(*srcMonitor, localX, localY, exitDir)) {
@@ -392,6 +469,45 @@ std::optional<TransitionResult> GeometryRouter::findNeighborAcrossEdge(
 
   clampToMonitor(*bestDst, result.m_dstX, result.m_dstY);
   return result;
+}
+
+uint32_t GeometryRouter::getActiveSidesForMachine(const std::string &machineName) const
+{
+  using enum DirectionMask;
+
+  if (!m_layout.m_enabled) {
+    return static_cast<uint32_t>(NoDirMask);
+  }
+
+  const MachineLayout *machine = m_layout.findMachine(machineName);
+  if (machine == nullptr) {
+    return static_cast<uint32_t>(NoDirMask);
+  }
+
+  uint32_t sides = static_cast<uint32_t>(NoDirMask);
+  for (const auto &monitor : machine->m_monitors) {
+    const int32_t left = monitor.m_localX;
+    const int32_t right = monitor.m_localX + monitor.m_width - 1;
+    const int32_t top = monitor.m_localY;
+    const int32_t bottom = monitor.m_localY + monitor.m_height - 1;
+    const int32_t midX = monitor.m_localX + monitor.m_width / 2;
+    const int32_t midY = monitor.m_localY + monitor.m_height / 2;
+
+    if (findTransition(machineName, left, midY, Direction::Left)) {
+      sides |= static_cast<uint32_t>(LeftMask);
+    }
+    if (findTransition(machineName, right, midY, Direction::Right)) {
+      sides |= static_cast<uint32_t>(RightMask);
+    }
+    if (findTransition(machineName, midX, top, Direction::Top)) {
+      sides |= static_cast<uint32_t>(TopMask);
+    }
+    if (findTransition(machineName, midX, bottom, Direction::Bottom)) {
+      sides |= static_cast<uint32_t>(BottomMask);
+    }
+  }
+
+  return sides;
 }
 
 } // namespace deskflow::server

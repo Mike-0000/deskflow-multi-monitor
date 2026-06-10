@@ -401,6 +401,8 @@ Each computer entry lists one or more monitors. Each monitor defines:
 
 When advanced layout is enabled, the server uses geometry-based routing. The legacy `links` section remains available as a fallback when advanced layout is disabled.
 
+When advanced layout is enabled, dead corners (`switchCorners` / `switchCornerSize`) are evaluated against the monitor edge the cursor is leaving, not the combined bounding box of all monitors on that computer. Edge barriers on the server also follow the same geometry-based transitions.
+
 See [advanced-layout-example.conf](advanced-layout-example.conf) for a two-computer, multi-monitor example.
 
 ### options section
@@ -423,6 +425,9 @@ end
 |switchCornerSize | integer (N) | Sets the size of all corners in pixels. The cursor must be within `N` pixels of the corner to be considered to be in the corner.|
 |switchDelay | integer| Deskflow won't switch computers when the mouse reaches edge of a computer unless it stays on the edge for `N` milliseconds. This helps prevent unintentional switching when working near an edge.|
 |switchDoubleTap| integer(N) | Deskflow won't switch computers when the mouse reaches the edge of a computer unless it's moved away from the edge and then back to the edge within `N` milliseconds. With the option you have to quickly tap the edge twice to switch. This helps prevent unintentional switching when working near the edge.|
+|switchNeedsShift | `true` or `false` | If set to ''true'', the Shift key must be held before an edge switch is allowed.|
+|switchNeedsControl | `true` or `false` | If set to ''true'', the Control key must be held before an edge switch is allowed.|
+|switchNeedsAlt | `true` or `false` | If set to ''true'', the Alt key must be held before an edge switch is allowed.|
 |screenSaverSync| `true` or `false`| ''Note: Removed in v1.14.1'' If set to ''false'' then Deskflow won't synchronize screen savers. Client screen savers will start according to their individual configurations. The server screen saver won't start if there is input, even if that input is directed toward a client computer.|
 |relativeMouseMoves| `true` or `false`| If set to ''true'' then secondary computers move the mouse using relative rather than absolute mouse moves when and only when the cursor is locked to the computer (by ''Scroll Lock'' or a configured hot key). This is intended to make Deskflow work better with certain games. If set to ''false'' or not set then all mouse moves are absolute.|
 |clipboardSharing| `true` or `false`|If set to ''true'' then clipboard sharing will be enabled and the ''clipboardSharingSize'' setting will be used. If set to false, then clipboard sharing will be disabled and the the ''clipboardSharingSize'' setting will be ignored.|
@@ -432,7 +437,9 @@ end
 |mousebutton(button) | actions| Binds the modifier and mouse button combination ''button'' to the given ''actions''. ''button'' is an optional list of modifiers (''shift'', ''control'', ''alt'', ''meta'' or ''super'') followed by a button number. The primary button (the left button for right handed users) is button 1, the middle button is 2, etc. Actions can be found below. Mouse button actions are not handled while the cursor is on the server. You cannot use these to perform an action while on the server. Separate actions can be assigned to press and release.|
 
 
-You can use both the ''switchDelay'' and ''switchDoubleTap'' options at the same time. Deskflow will switch when either requirement is satisfied.
+You can use both the ''switchDelay'' and ''switchDoubleTap'' options at the same time. Deskflow will switch when either requirement is satisfied. If the cursor leaves the edge before a delayed switch completes, the pending switch is cancelled.
+
+Holding a mouse button on the active screen also prevents edge switching, similar to locking the cursor with Scroll Lock or a `lockCursorToScreen` hot key.
 
 ##### Actions
 

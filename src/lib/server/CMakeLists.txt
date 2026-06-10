@@ -42,6 +42,8 @@ add_library(server STATIC
   PrimaryClient.h
   Server.cpp
   Server.h
+  SwitchDecision.cpp
+  SwitchDecision.h
 )
 
 target_link_libraries(server PUBLIC common app)

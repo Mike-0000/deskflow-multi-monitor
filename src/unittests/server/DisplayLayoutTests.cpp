@@ -154,6 +154,37 @@ void DisplayLayoutTests::lShapedServerCanSwitchToClientAboveLeft()
   QCOMPARE(fromUpperLeftOfRight->m_dstY, 880);
 }
 
+void DisplayLayoutTests::clientBottomOvershootStillSwitchesToServer()
+{
+  WorkspaceLayout layout;
+  layout.m_enabled = true;
+
+  MachineLayout server;
+  server.m_name = "server";
+  server.m_monitors.push_back(makeMonitor("left", 0, 300, 1920, 1080, 0, 300));
+
+  MachineLayout client;
+  client.m_name = "client";
+  client.m_monitors.push_back(makeMonitor("only", 0, -780, 1920, 1080));
+
+  layout.m_machines.push_back(server);
+  layout.m_machines.push_back(client);
+
+  GeometryRouter router(layout);
+
+  const auto onePixelPast = router.findTransition("client", 1000, 1080, Direction::Bottom);
+  QVERIFY(onePixelPast.has_value());
+  QCOMPARE(onePixelPast->m_dstMachine, std::string("server"));
+  QCOMPARE(onePixelPast->m_dstX, 1000);
+  QCOMPARE(onePixelPast->m_dstY, 300);
+
+  const auto fastMouseDeltaPast = router.findTransition("client", 1000, 1125, Direction::Bottom);
+  QVERIFY(fastMouseDeltaPast.has_value());
+  QCOMPARE(fastMouseDeltaPast->m_dstMachine, std::string("server"));
+  QCOMPARE(fastMouseDeltaPast->m_dstX, 1000);
+  QCOMPARE(fastMouseDeltaPast->m_dstY, 300);
+}
+
 void DisplayLayoutTests::negativeCoordinates()
 {
   WorkspaceLayout layout;
@@ -193,6 +224,38 @@ void DisplayLayoutTests::clampToMonitor()
   GeometryRouter::clampToMonitor(monitor, x, y);
   QCOMPARE(x, 10);
   QCOMPARE(y, 119);
+}
+
+void DisplayLayoutTests::activeSidesMatchTransitions()
+{
+  const auto layout = makeTwoMachineLayout();
+  GeometryRouter router(layout);
+
+  using enum DirectionMask;
+  const uint32_t desktopSides = router.getActiveSidesForMachine("desktop");
+  QVERIFY((desktopSides & static_cast<uint32_t>(RightMask)) != 0);
+  QVERIFY((desktopSides & static_cast<uint32_t>(LeftMask)) == 0);
+
+  const uint32_t laptopSides = router.getActiveSidesForMachine("laptop");
+  QVERIFY((laptopSides & static_cast<uint32_t>(LeftMask)) != 0);
+
+  WorkspaceLayout gapLayout;
+  gapLayout.m_enabled = true;
+
+  MachineLayout left;
+  left.m_name = "left";
+  left.m_monitors.push_back(makeMonitor("a", 0, 0, 1920, 1080));
+
+  MachineLayout right;
+  right.m_name = "right";
+  right.m_monitors.push_back(makeMonitor("b", 2000, 0, 1920, 1080));
+
+  gapLayout.m_machines.push_back(left);
+  gapLayout.m_machines.push_back(right);
+
+  GeometryRouter gapRouter(gapLayout);
+  const uint32_t leftSides = gapRouter.getActiveSidesForMachine("left");
+  QVERIFY((leftSides & static_cast<uint32_t>(RightMask)) == 0);
 }
 
 QTEST_MAIN(DisplayLayoutTests)

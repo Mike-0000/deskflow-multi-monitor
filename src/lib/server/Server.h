@@ -16,6 +16,7 @@
 #include "deskflow/KeyTypes.h"
 #include "deskflow/MouseTypes.h"
 #include "server/Config.h"
+#include "server/SwitchDecision.h"
 
 #include <climits>
 #include <map>
@@ -265,11 +266,28 @@ private:
   // adjusts x and y or neither to avoid ending up in a jump zone
   // after entering the client in the given direction.
   void avoidJumpZone(const BaseClientProxy *, Direction, int32_t &x, int32_t &y) const;
+  void avoidAdvancedJumpZone(const BaseClientProxy *, Direction, int32_t &x, int32_t &y) const;
 
   // test if a switch is permitted.  this includes testing user
   // options like switch delay and tracking any state required to
   // implement them.  returns true iff a switch is permitted.
-  bool isSwitchOkay(BaseClientProxy *dst, Direction, int32_t x, int32_t y, int32_t xActive, int32_t yActive);
+  bool isSwitchOkay(BaseClientProxy *dst, Direction, int32_t x, int32_t y, int32_t xActive, int32_t yActive, bool commitOnly = false);
+
+  deskflow::server::SwitchGateSettings buildSwitchGateSettings(const std::string &activeName) const;
+  deskflow::server::SwitchGateState readSwitchGateState() const;
+  void applySwitchGateState(const deskflow::server::SwitchGateState &state, BaseClientProxy *pendingScreen);
+  deskflow::server::SwitchGateInput buildSwitchGateInput(
+      BaseClientProxy *dst, Direction dir, int32_t x, int32_t y, int32_t xActive, int32_t yActive, bool commitOnly
+  ) const;
+  void getSwitchCornerRect(int32_t xActive, int32_t yActive, int32_t &ax, int32_t &ay, int32_t &aw, int32_t &ah) const;
+  bool isCursorOnPendingSwitchEdge() const;
+  bool tryApplySwitchCandidate(const deskflow::server::SwitchCandidate &candidate, BaseClientProxy *dst);
+  deskflow::server::SwitchCandidate makePrimarySwitchCandidate(
+      Direction dir, int32_t probeX, int32_t probeY, int32_t xActive, int32_t yActive, bool advanced
+  ) const;
+  bool tryPrimarySwitchFromCandidates(
+      const std::vector<deskflow::server::SwitchCandidate> &candidates, int32_t x, int32_t y, bool advanced
+  );
 
   // update switch state due to a mouse move at \p x, \p y that
   // doesn't switch screens.
@@ -450,6 +468,7 @@ private:
   int32_t m_yDelta = 0;
   int32_t m_xDelta2 = 0;
   int32_t m_yDelta2 = 0;
+  bool m_dropSecondaryWarpDelta = false;
 
   int32_t m_xSaver;
   int32_t m_ySaver;

@@ -1,0 +1,84 @@
+---
+description: Windows build, test, migrate, and MSVC environment for Deskflow
+alwaysApply: true
+---
+
+# Deskflow Windows Build & Deploy
+
+## Required workflow after code changes
+
+After any C++/CMake change that affects the product, run **build → test → migrate** before considering the task done:
+
+```powershell
+# 1. Build (imports MSVC, vcpkg, Qt)
+.\build-windows.ps1
+
+# 2. Unit tests (reconfigure with -DSKIP_BUILD_TESTS=OFF first if tests are missing)
+$env:PATH = "$PWD\.qt\6.10.3\msvc2022_64\bin;$PWD\build\bin;$env:PATH"
+Set-Location build\src\lib\server
+..\..\..\unittests\server\SwitchDecisionTests.exe
+..\..\..\unittests\server\DisplayLayoutTests.exe
+Set-Location $PWD\..\..\..\..
+
+# 3. Migrate installed Deskflow (requires Administrator)
+.\migrate-windows.ps1 -Force
+```
+
+Or combine build + migrate:
+
+```powershell
+.\migrate-windows.ps1 -BuildFirst -Force
+```
+
+Preview migration without changes: `.\migrate-windows.ps1 -WhatIf`
+
+## migrate-windows.ps1
+
+Copies `build/bin` into `C:\Program Files\Deskflow`, backs up to `.migration-backup/`, stops/restarts the Deskflow service. Settings in `%APPDATA%\Deskflow` are preserved.
+
+| Flag | When |
+|------|------|
+| `-BuildFirst` | Run `build-windows.ps1` before copying |
+| `-Force` | Required on **client** machines (protocol 1.9; server should be upgraded first) |
+| `-WhatIf` | Preflight only; no admin needed |
+| `-NoStart` | Install but do not restart the service |
+| `-SkipBackup` | Skip backup (avoid unless urgent) |
+
+**Admin required** for real migration. If the agent shell is not elevated, launch via UAC:
+
+```powershell
+Start-Process powershell -Verb RunAs -Wait -ArgumentList `
+  "-NoProfile -ExecutionPolicy Bypass -Command `"cd '$PWD'; .\migrate-windows.ps1 -Force`""
+```
+
+## Manual incremental build (agents)
+
+**Always import MSVC before `cmake --build`.** Without `vcvars64.bat`, STL headers fail (`cstdint` missing).
+
+```powershell
+$vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
+$envFile = Join-Path $env:TEMP "deskflow-vcvars.env"
+cmd /c "`"$vcvars`" >nul 2>&1 && set" | Out-File $envFile -Encoding ascii
+Get-Content $envFile | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($matches[1])" $matches[2] } }
+Remove-Item $envFile -Force
+
+cmake --build build --target deskflow deskflow-core server SwitchDecisionTests DisplayLayoutTests -j 8
+```
+
+Then run `.\migrate-windows.ps1 -Force` (elevated).
+
+## Key paths
+
+| Artifact | Path |
+|----------|------|
+| GUI (built) | `build/bin/deskflow.exe` |
+| GUI (installed) | `C:\Program Files\Deskflow\deskflow.exe` |
+| Migration backups | `.migration-backup/<timestamp>/` |
+| Qt | `.qt/6.10.3/msvc2022_64` |
+
+## Pitfalls
+
+- PowerShell: use `;` not `&&`.
+- New `.cpp` files need CMake reconfigure (GLOB mismatch).
+- `Server.h`: qualify `deskflow::server::` types; no `using namespace` in headers.
+- Client migration aborts without `-Force` when server may still be on an older build.

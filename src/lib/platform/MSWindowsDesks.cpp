@@ -21,6 +21,7 @@
 #include "platform/MSWindowsHook.h"
 #include "platform/MSWindowsScreen.h"
 
+#include <algorithm>
 #include <malloc.h>
 
 // these are only defined when WINVER >= 0x0500
@@ -36,6 +37,9 @@
 
 #if !defined(MOUSEEVENTF_HWHEEL)
 #define MOUSEEVENTF_HWHEEL 0x1000
+#endif
+#if !defined(MOUSEEVENTF_VIRTUALDESK)
+#define MOUSEEVENTF_VIRTUALDESK 0x4000
 #endif
 
 // X button stuff
@@ -93,7 +97,7 @@ static void send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
   SendInput(1, &inp, sizeof(inp));
 }
 
-static void send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
+static UINT send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
 {
   INPUT inp;
   inp.type = INPUT_MOUSE;
@@ -103,7 +107,7 @@ static void send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
   inp.mi.mouseData = dwData;
   inp.mi.time = 0;
   inp.mi.dwExtraInfo = 0;
-  SendInput(1, &inp, sizeof(inp));
+  return SendInput(1, &inp, sizeof(inp));
 }
 
 //
@@ -413,15 +417,55 @@ LRESULT CALLBACK MSWindowsDesks::secondaryDeskProc(HWND hwnd, UINT msg, WPARAM w
 
 void MSWindowsDesks::deskMouseMove(int32_t x, int32_t y) const
 {
-  // when using absolute positioning with mouse_event(),
-  // the normalized device coordinates range over only
-  // the primary screen.
-  int32_t w = GetSystemMetrics(SM_CXSCREEN);
-  int32_t h = GetSystemMetrics(SM_CYSCREEN);
-  send_mouse_input(
-      MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE, (DWORD)((65535.0f * x) / (w - 1) + 0.5f),
-      (DWORD)((65535.0f * y) / (h - 1) + 0.5f), 0
+  if (SetCursorPos(x, y)) {
+    POINT cursorPos;
+    if (GetCursorPos(&cursorPos)) {
+      LOG_VERBOSE("SetCursorPos fake mouse move requested %d,%d; cursor is now %ld,%ld", x, y, cursorPos.x, cursorPos.y);
+    } else {
+      LOG_DEBUG("SetCursorPos fake mouse move requested %d,%d; cursor position read failed: %lu", x, y, GetLastError());
+    }
+    return;
+  }
+
+  const DWORD setCursorError = GetLastError();
+  LOG_DEBUG("SetCursorPos failed for fake mouse move to %d,%d: %lu; falling back to SendInput", x, y, setCursorError);
+
+  const int32_t vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+  const int32_t vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+  const int32_t vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+  const int32_t vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+  if (vw <= 1 || vh <= 1) {
+    LOG_DEBUG("invalid virtual desktop for fake mouse move: origin=%d,%d size=%dx%d", vx, vy, vw, vh);
+    return;
+  }
+
+  const int32_t clampedX = std::max(vx, std::min(x, vx + vw - 1));
+  const int32_t clampedY = std::max(vy, std::min(y, vy + vh - 1));
+  const DWORD normalizedX = (DWORD)((65535.0f * (clampedX - vx)) / (vw - 1) + 0.5f);
+  const DWORD normalizedY = (DWORD)((65535.0f * (clampedY - vy)) / (vh - 1) + 0.5f);
+  SetLastError(0);
+  const UINT sent = send_mouse_input(
+      MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+      normalizedX,
+      normalizedY,
+      0
   );
+  const DWORD sendInputError = sent == 0 ? GetLastError() : 0;
+
+  POINT cursorPos;
+  if (GetCursorPos(&cursorPos)) {
+    LOG_DEBUG(
+        "SendInput fake mouse move requested %d,%d clamped %d,%d normalized %lu,%lu sent=%u error=%lu; cursor is now "
+        "%ld,%ld",
+        x, y, clampedX, clampedY, normalizedX, normalizedY, sent, sendInputError, cursorPos.x, cursorPos.y
+    );
+  } else {
+    LOG_DEBUG(
+        "SendInput fake mouse move requested %d,%d clamped %d,%d normalized %lu,%lu sent=%u error=%lu; cursor position "
+        "read failed: %lu",
+        x, y, clampedX, clampedY, normalizedX, normalizedY, sent, sendInputError, GetLastError()
+    );
+  }
 }
 
 void MSWindowsDesks::deskMouseRelativeMove(int32_t dx, int32_t dy) const

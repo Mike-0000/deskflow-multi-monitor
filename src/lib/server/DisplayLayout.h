@@ -88,6 +88,9 @@ public:
   //! Clamp coordinates to monitor bounds.
   static void clampToMonitor(const DisplayRect &monitor, int32_t &x, int32_t &y);
 
+  //! Return a DirectionMask bitmask of edges that can transition to another machine.
+  uint32_t getActiveSidesForMachine(const std::string &machineName) const;
+
 private:
   std::optional<TransitionResult> findNeighborAcrossEdge(
       const MachineLayout &srcMachine, const DisplayRect &srcMonitor, int32_t localX, int32_t localY, Direction exitDir

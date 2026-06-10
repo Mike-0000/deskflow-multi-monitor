@@ -37,3 +37,11 @@ create_test(
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
 )
 
+create_test(
+  NAME SwitchDecisionTests
+  DEPENDS server
+  LIBS base arch ${extra_libs}
+  SOURCE SwitchDecisionTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
+)
+
