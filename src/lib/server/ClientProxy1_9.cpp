@@ -73,10 +73,11 @@ bool ClientProxy1_9::recvDisplayInfo()
     display.m_localY = localY;
     display.m_width = width;
     display.m_height = height;
-    display.m_worldX = localX;
-    display.m_worldY = localY;
+    display.m_worldX = 0;
+    display.m_worldY = 0;
     display.m_scale = static_cast<float>(scale100) / 100.0f;
     display.m_dpi = dpi;
+    display.ensureLayoutSizes();
     m_reportedDisplays.push_back(display);
   }
 

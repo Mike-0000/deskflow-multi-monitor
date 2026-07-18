@@ -6,6 +6,8 @@
 
 #include "server/DisplayLayout.h"
 
+#include "server/EdgeGraph.h"
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -16,6 +18,20 @@ namespace {
 
 constexpr int32_t kExitEdgeMargin = 1;
 constexpr int32_t kExitOvershootTolerance = 256;
+
+int32_t scaleCoord(int32_t value, int32_t fromExtent, int32_t toExtent)
+{
+  if (fromExtent <= 0) {
+    return 0;
+  }
+  // Round half away from zero for stable bijective-ish mapping.
+  const int64_t num = static_cast<int64_t>(value) * static_cast<int64_t>(toExtent);
+  const int64_t den = static_cast<int64_t>(fromExtent);
+  if (num >= 0) {
+    return static_cast<int32_t>((num + den / 2) / den);
+  }
+  return static_cast<int32_t>((num - den / 2) / den);
+}
 
 bool isAtExitEdge(const DisplayRect &monitor, int32_t localX, int32_t localY, Direction exitDir)
 {
@@ -122,6 +138,18 @@ void projectToExitEdge(const DisplayRect &monitor, Direction exitDir, int32_t &l
 
 } // namespace
 
+int32_t layoutSizeFromPixels(int32_t pixels, int32_t dpi, float scale)
+{
+  if (pixels <= 0) {
+    return 0;
+  }
+  if (scale > 0.0f && std::abs(scale - 1.0f) > 0.001f) {
+    return std::max(1, static_cast<int32_t>(std::lround(static_cast<double>(pixels) / static_cast<double>(scale))));
+  }
+  const int32_t safeDpi = dpi > 0 ? dpi : kReferenceDpi;
+  return std::max(1, static_cast<int32_t>((static_cast<int64_t>(pixels) * kReferenceDpi + safeDpi / 2) / safeDpi));
+}
+
 bool DisplayRect::containsLocal(int32_t x, int32_t y) const
 {
   return x >= m_localX && x < m_localX + m_width && y >= m_localY && y < m_localY + m_height;
@@ -129,27 +157,53 @@ bool DisplayRect::containsLocal(int32_t x, int32_t y) const
 
 bool DisplayRect::containsWorld(int32_t x, int32_t y) const
 {
-  return x >= m_worldX && x < m_worldX + m_width && y >= m_worldY && y < m_worldY + m_height;
+  return x >= m_worldX && x < m_worldX + layoutWidth() && y >= m_worldY && y < m_worldY + layoutHeight();
+}
+
+int32_t DisplayRect::layoutWidth() const
+{
+  if (m_layoutWidth > 0) {
+    return m_layoutWidth;
+  }
+  return layoutSizeFromPixels(m_width, m_dpi, m_scale);
+}
+
+int32_t DisplayRect::layoutHeight() const
+{
+  if (m_layoutHeight > 0) {
+    return m_layoutHeight;
+  }
+  return layoutSizeFromPixels(m_height, m_dpi, m_scale);
+}
+
+void DisplayRect::ensureLayoutSizes()
+{
+  if (m_layoutWidth <= 0) {
+    m_layoutWidth = layoutSizeFromPixels(m_width, m_dpi, m_scale);
+  }
+  if (m_layoutHeight <= 0) {
+    m_layoutHeight = layoutSizeFromPixels(m_height, m_dpi, m_scale);
+  }
 }
 
 int32_t DisplayRect::localToWorldX(int32_t localX) const
 {
-  return m_worldX + (localX - m_localX);
+  return m_worldX + scaleCoord(localX - m_localX, m_width, layoutWidth());
 }
 
 int32_t DisplayRect::localToWorldY(int32_t localY) const
 {
-  return m_worldY + (localY - m_localY);
+  return m_worldY + scaleCoord(localY - m_localY, m_height, layoutHeight());
 }
 
 int32_t DisplayRect::worldToLocalX(int32_t worldX) const
 {
-  return m_localX + (worldX - m_worldX);
+  return m_localX + scaleCoord(worldX - m_worldX, layoutWidth(), m_width);
 }
 
 int32_t DisplayRect::worldToLocalY(int32_t worldY) const
 {
-  return m_localY + (worldY - m_worldY);
+  return m_localY + scaleCoord(worldY - m_worldY, layoutHeight(), m_height);
 }
 
 const DisplayRect *MachineLayout::findMonitorAtLocal(int32_t x, int32_t y) const
@@ -170,6 +224,24 @@ const DisplayRect *MachineLayout::findMonitorAtWorld(int32_t x, int32_t y) const
     }
   }
   return nullptr;
+}
+
+const DisplayRect *MachineLayout::findMonitorById(const std::string &id) const
+{
+  if (id.empty()) {
+    return nullptr;
+  }
+  for (const auto &monitor : m_monitors) {
+    if (monitor.m_id == id || monitor.m_name == id) {
+      return &monitor;
+    }
+  }
+  return nullptr;
+}
+
+DisplayRect *MachineLayout::findMonitorById(const std::string &id)
+{
+  return const_cast<DisplayRect *>(static_cast<const MachineLayout *>(this)->findMonitorById(id));
 }
 
 void MachineLayout::getBoundingLocal(int32_t &x, int32_t &y, int32_t &w, int32_t &h) const
@@ -197,6 +269,13 @@ void MachineLayout::getBoundingLocal(int32_t &x, int32_t &y, int32_t &w, int32_t
   h = maxY - minY;
 }
 
+void MachineLayout::ensureLayoutSizes()
+{
+  for (auto &monitor : m_monitors) {
+    monitor.ensureLayoutSizes();
+  }
+}
+
 const MachineLayout *WorkspaceLayout::findMachine(const std::string &name) const
 {
   for (const auto &machine : m_machines) {
@@ -215,6 +294,13 @@ MachineLayout *WorkspaceLayout::findMachine(const std::string &name)
     }
   }
   return nullptr;
+}
+
+void WorkspaceLayout::ensureLayoutSizes()
+{
+  for (auto &machine : m_machines) {
+    machine.ensureLayoutSizes();
+  }
 }
 
 GeometryRouter::GeometryRouter(const WorkspaceLayout &layout) : m_layout(layout)
@@ -327,187 +413,75 @@ std::optional<TransitionResult> GeometryRouter::findTransition(
     return std::nullopt;
   }
 
-  return findNeighborAcrossEdge(*src, *srcMonitor, localX, localY, exitDir);
-}
+  const int32_t worldX = srcMonitor->localToWorldX(localX);
+  const int32_t worldY = srcMonitor->localToWorldY(localY);
+  const int32_t exitAlongEdge = (exitDir == Direction::Left || exitDir == Direction::Right) ? worldY : worldX;
+  const std::string srcMonitorId = srcMonitor->m_id.empty() ? srcMonitor->m_name : srcMonitor->m_id;
 
-std::optional<TransitionResult> GeometryRouter::findNeighborAcrossEdge(
-    const MachineLayout &srcMachine, const DisplayRect &srcMonitor, int32_t localX, int32_t localY, Direction exitDir
-) const
-{
-  using enum Direction;
-
-  const int32_t worldX = srcMonitor.localToWorldX(localX);
-  const int32_t worldY = srcMonitor.localToWorldY(localY);
-
-  int32_t srcEdgeStart = 0;
-  int32_t srcEdgeEnd = 0;
-  int32_t exitWorldCoord = 0;
-  Direction neighborSide = NoDirection;
-
-  switch (exitDir) {
-  case Left:
-    srcEdgeStart = srcMonitor.m_worldY;
-    srcEdgeEnd = srcMonitor.m_worldY + srcMonitor.m_height;
-    exitWorldCoord = srcMonitor.m_worldX;
-    neighborSide = Right;
-    break;
-  case Right:
-    srcEdgeStart = srcMonitor.m_worldY;
-    srcEdgeEnd = srcMonitor.m_worldY + srcMonitor.m_height;
-    exitWorldCoord = srcMonitor.m_worldX + srcMonitor.m_width;
-    neighborSide = Left;
-    break;
-  case Top:
-    srcEdgeStart = srcMonitor.m_worldX;
-    srcEdgeEnd = srcMonitor.m_worldX + srcMonitor.m_width;
-    exitWorldCoord = srcMonitor.m_worldY;
-    neighborSide = Bottom;
-    break;
-  case Bottom:
-    srcEdgeStart = srcMonitor.m_worldX;
-    srcEdgeEnd = srcMonitor.m_worldX + srcMonitor.m_width;
-    exitWorldCoord = srcMonitor.m_worldY + srcMonitor.m_height;
-    neighborSide = Top;
-    break;
-  default:
+  EdgeSegmentGraph graph(m_layout);
+  const auto segment = graph.findSegmentAtExit(srcMachine, srcMonitorId, exitDir, exitAlongEdge);
+  if (!segment.has_value()) {
     return std::nullopt;
   }
 
-  const int32_t exitAlongEdge = (exitDir == Left || exitDir == Right) ? worldY : worldX;
-
-  const DisplayRect *bestDst = nullptr;
-  const MachineLayout *bestMachine = nullptr;
-  int32_t bestOverlap = 0;
-
-  for (const auto &dstMachine : m_layout.m_machines) {
-    if (dstMachine.m_name == srcMachine.m_name) {
-      continue;
-    }
-
-    for (const auto &dstMonitor : dstMachine.m_monitors) {
-      int32_t dstEdgeStart = 0;
-      int32_t dstEdgeEnd = 0;
-      int32_t dstEdgeCoord = 0;
-
-      switch (neighborSide) {
-      case Right:
-        dstEdgeStart = dstMonitor.m_worldY;
-        dstEdgeEnd = dstMonitor.m_worldY + dstMonitor.m_height;
-        dstEdgeCoord = dstMonitor.m_worldX + dstMonitor.m_width;
-        break;
-      case Left:
-        dstEdgeStart = dstMonitor.m_worldY;
-        dstEdgeEnd = dstMonitor.m_worldY + dstMonitor.m_height;
-        dstEdgeCoord = dstMonitor.m_worldX;
-        break;
-      case Bottom:
-        dstEdgeStart = dstMonitor.m_worldX;
-        dstEdgeEnd = dstMonitor.m_worldX + dstMonitor.m_width;
-        dstEdgeCoord = dstMonitor.m_worldY + dstMonitor.m_height;
-        break;
-      case Top:
-        dstEdgeStart = dstMonitor.m_worldX;
-        dstEdgeEnd = dstMonitor.m_worldX + dstMonitor.m_width;
-        dstEdgeCoord = dstMonitor.m_worldY;
-        break;
-      default:
-        continue;
-      }
-
-      if (std::abs(dstEdgeCoord - exitWorldCoord) > 1) {
-        continue;
-      }
-
-      const int32_t overlapStart = std::max(srcEdgeStart, dstEdgeStart);
-      const int32_t overlapEnd = std::min(srcEdgeEnd, dstEdgeEnd);
-      if (overlapEnd <= overlapStart) {
-        continue;
-      }
-
-      if (exitAlongEdge < overlapStart || exitAlongEdge >= overlapEnd) {
-        continue;
-      }
-
-      const int32_t overlap = overlapEnd - overlapStart;
-      if (overlap > bestOverlap) {
-        bestOverlap = overlap;
-        bestDst = &dstMonitor;
-        bestMachine = &dstMachine;
-      }
-    }
+  const MachineLayout *dstMachine = m_layout.findMachine(segment->m_dstMachine);
+  if (dstMachine == nullptr) {
+    return std::nullopt;
   }
-
-  if (bestDst == nullptr || bestMachine == nullptr) {
+  const DisplayRect *dstMonitor = dstMachine->findMonitorById(segment->m_dstMonitorId);
+  if (dstMonitor == nullptr) {
     return std::nullopt;
   }
 
   TransitionResult result;
   result.m_valid = true;
-  result.m_dstMachine = bestMachine->m_name;
+  result.m_dstMachine = segment->m_dstMachine;
+  result.m_dstMonitorId = segment->m_dstMonitorId;
   result.m_direction = exitDir;
+  result.m_hasReverseNeighbor =
+      graph.hasReverseSegment(segment->m_dstMachine, segment->m_dstMonitorId, exitDir);
 
-  switch (neighborSide) {
+  using enum Direction;
+  switch (exitDir) {
   case Left:
-    result.m_dstX = bestDst->worldToLocalX(exitWorldCoord);
-    result.m_dstY = bestDst->worldToLocalY(worldY);
+    result.m_dstX = dstMonitor->m_localX + dstMonitor->m_width - 1;
+    result.m_dstY = dstMonitor->worldToLocalY(worldY);
     break;
   case Right:
-    result.m_dstX = bestDst->worldToLocalX(exitWorldCoord - 1);
-    result.m_dstY = bestDst->worldToLocalY(worldY);
+    result.m_dstX = dstMonitor->m_localX;
+    result.m_dstY = dstMonitor->worldToLocalY(worldY);
     break;
   case Top:
-    result.m_dstX = bestDst->worldToLocalX(worldX);
-    result.m_dstY = bestDst->worldToLocalY(exitWorldCoord);
+    result.m_dstX = dstMonitor->worldToLocalX(worldX);
+    result.m_dstY = dstMonitor->m_localY + dstMonitor->m_height - 1;
     break;
   case Bottom:
-    result.m_dstX = bestDst->worldToLocalX(worldX);
-    result.m_dstY = bestDst->worldToLocalY(exitWorldCoord - 1);
+    result.m_dstX = dstMonitor->worldToLocalX(worldX);
+    result.m_dstY = dstMonitor->m_localY;
     break;
   default:
     return std::nullopt;
   }
 
-  clampToMonitor(*bestDst, result.m_dstX, result.m_dstY);
+  clampToMonitor(*dstMonitor, result.m_dstX, result.m_dstY);
   return result;
+}
+
+bool GeometryRouter::hasReverseNeighbor(
+    const std::string &dstMachine, const std::string &dstMonitorId, Direction enteredFromSrcExit
+) const
+{
+  EdgeSegmentGraph graph(m_layout);
+  return graph.hasReverseSegment(dstMachine, dstMonitorId, enteredFromSrcExit);
 }
 
 uint32_t GeometryRouter::getActiveSidesForMachine(const std::string &machineName) const
 {
-  using enum DirectionMask;
-
   if (!m_layout.m_enabled) {
-    return static_cast<uint32_t>(NoDirMask);
+    return static_cast<uint32_t>(DirectionMask::NoDirMask);
   }
-
-  const MachineLayout *machine = m_layout.findMachine(machineName);
-  if (machine == nullptr) {
-    return static_cast<uint32_t>(NoDirMask);
-  }
-
-  uint32_t sides = static_cast<uint32_t>(NoDirMask);
-  for (const auto &monitor : machine->m_monitors) {
-    const int32_t left = monitor.m_localX;
-    const int32_t right = monitor.m_localX + monitor.m_width - 1;
-    const int32_t top = monitor.m_localY;
-    const int32_t bottom = monitor.m_localY + monitor.m_height - 1;
-    const int32_t midX = monitor.m_localX + monitor.m_width / 2;
-    const int32_t midY = monitor.m_localY + monitor.m_height / 2;
-
-    if (findTransition(machineName, left, midY, Direction::Left)) {
-      sides |= static_cast<uint32_t>(LeftMask);
-    }
-    if (findTransition(machineName, right, midY, Direction::Right)) {
-      sides |= static_cast<uint32_t>(RightMask);
-    }
-    if (findTransition(machineName, midX, top, Direction::Top)) {
-      sides |= static_cast<uint32_t>(TopMask);
-    }
-    if (findTransition(machineName, midX, bottom, Direction::Bottom)) {
-      sides |= static_cast<uint32_t>(BottomMask);
-    }
-  }
-
-  return sides;
+  EdgeSegmentGraph graph(m_layout);
+  return graph.activeSidesForMachine(machineName);
 }
 
 } // namespace deskflow::server

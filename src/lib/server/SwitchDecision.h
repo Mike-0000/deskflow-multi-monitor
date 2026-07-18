@@ -16,12 +16,6 @@
 
 namespace deskflow::server {
 
-enum class SwitchRoutingMode
-{
-  Legacy,
-  Advanced
-};
-
 //! A resolved cross-screen transition candidate before gate evaluation.
 struct SwitchCandidate
 {

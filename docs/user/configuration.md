@@ -386,7 +386,7 @@ Note that links do not have to be symmetrical; for instance, here the edge betwe
 
 ### display_layouts section (advanced monitor layout)
 
-When `advancedLayout = true`, DeskFlow routes the cursor using per-monitor rectangles placed in a shared world coordinate space. This supports partial edge overlaps between monitors on different computers, similar to the Windows Display Settings layout.
+When `advancedLayout = true`, DeskFlow routes the cursor using a precomputed **edge-segment graph** over per-monitor rectangles in a shared density-independent world space. Partial edge overlaps are first-class: only overlapping edge segments transition.
 
 Each computer entry lists one or more monitors. Each monitor defines:
 
@@ -395,13 +395,17 @@ Each computer entry lists one or more monitors. Each monitor defines:
 | `id` | Stable monitor identifier |
 | `name` | Human-readable label |
 | `worldX`, `worldY` | Position in the shared layout |
-| `width`, `height` | Monitor size in pixels |
+| `width`, `height` | Pixel size on that computer's OS desktop |
+| `layoutWidth`, `layoutHeight` | Density-independent size in world space (derived from `dpi`/`scale` when omitted) |
 | `localX`, `localY` | Position on that computer's OS desktop |
-| `scale`, `dpi` | Optional scaling metadata |
+| `scale`, `dpi` | Used to derive layout size when `layoutWidth`/`layoutHeight` are absent |
+| `needsPlacement` | Set when a newly reported monitor was parked away from adjacency |
 
-When advanced layout is enabled, the server uses geometry-based routing. The legacy `links` section remains available as a fallback when advanced layout is disabled.
+Schema `version = 2` enables density-independent mapping. Older configs without `version` are migrated on load (layout sizes default to pixel sizes).
 
-When advanced layout is enabled, dead corners (`switchCorners` / `switchCornerSize`) are evaluated against the monitor edge the cursor is leaving, not the combined bounding box of all monitors on that computer. Edge barriers on the server also follow the same geometry-based transitions.
+When advanced layout is enabled, the server uses geometry-based routing and **ignores** the legacy `links` section for cursor switching. Keep `links` only for fallback when `advancedLayout = false`, or for older tooling.
+
+Dead corners (`switchCorners` / `switchCornerSize`) are evaluated against the monitor edge the cursor is leaving. Edge barriers on the server follow the edge-segment graph (any overlapping segment arms that side, not only the midpoint).
 
 See [advanced-layout-example.conf](advanced-layout-example.conf) for a two-computer, multi-monitor example.
 

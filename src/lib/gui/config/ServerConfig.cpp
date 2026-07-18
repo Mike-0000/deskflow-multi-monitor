@@ -144,6 +144,7 @@ void ServerConfig::commit()
   settings().endArray();
 
   settings().setValue("workspaceLayout/enabled", m_workspaceLayout.m_enabled);
+  settings().setValue("workspaceLayout/version", m_workspaceLayout.m_version);
   settings().setValue("workspaceLayout/machineCount", static_cast<int>(m_workspaceLayout.m_machines.size()));
   settings().beginWriteArray("workspaceLayout/machines");
   for (int i = 0; i < static_cast<int>(m_workspaceLayout.m_machines.size()); ++i) {
@@ -164,6 +165,9 @@ void ServerConfig::commit()
       settings().setValue("localY", monitor.m_localY);
       settings().setValue("scale", static_cast<double>(monitor.m_scale));
       settings().setValue("dpi", monitor.m_dpi);
+      settings().setValue("layoutWidth", monitor.m_layoutWidth);
+      settings().setValue("layoutHeight", monitor.m_layoutHeight);
+      settings().setValue("needsPlacement", monitor.m_needsPlacement);
     }
     settings().endArray();
   }
@@ -225,6 +229,7 @@ void ServerConfig::recall()
   settings().endArray();
 
   m_workspaceLayout.m_enabled = settings().value("workspaceLayout/enabled", false).toBool();
+  m_workspaceLayout.m_version = settings().value("workspaceLayout/version", 2).toInt();
   const int machineCount = settings().value("workspaceLayout/machineCount", 0).toInt();
   m_workspaceLayout.m_machines.clear();
   if (machineCount > 0) {
@@ -247,6 +252,10 @@ void ServerConfig::recall()
         monitor.m_localY = settings().value("localY", 0).toInt();
         monitor.m_scale = static_cast<float>(settings().value("scale", 1.0).toDouble());
         monitor.m_dpi = settings().value("dpi", 96).toInt();
+        monitor.m_layoutWidth = settings().value("layoutWidth", 0).toInt();
+        monitor.m_layoutHeight = settings().value("layoutHeight", 0).toInt();
+        monitor.m_needsPlacement = settings().value("needsPlacement", false).toBool();
+        monitor.ensureLayoutSizes();
         machine.m_monitors.push_back(monitor);
       }
       settings().endArray();
@@ -345,6 +354,7 @@ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config)
 
   if (config.workspaceLayout().m_enabled || !config.workspaceLayout().m_machines.empty()) {
     outStream << "section: display_layouts" << Qt::endl;
+    outStream << "\tversion = " << config.workspaceLayout().m_version << Qt::endl;
     outStream << "\tadvancedLayout = " << (config.workspaceLayout().m_enabled ? "true" : "false") << Qt::endl;
     for (const auto &machine : config.workspaceLayout().m_machines) {
       outStream << "\t" << QString::fromStdString(machine.m_name) << ":" << Qt::endl;
@@ -364,11 +374,20 @@ QTextStream &operator<<(QTextStream &outStream, const ServerConfig &config)
         outStream << "\t\t\theight = " << monitor.m_height << Qt::endl;
         outStream << "\t\t\tlocalX = " << monitor.m_localX << Qt::endl;
         outStream << "\t\t\tlocalY = " << monitor.m_localY << Qt::endl;
+        if (monitor.m_layoutWidth > 0) {
+          outStream << "\t\t\tlayoutWidth = " << monitor.m_layoutWidth << Qt::endl;
+        }
+        if (monitor.m_layoutHeight > 0) {
+          outStream << "\t\t\tlayoutHeight = " << monitor.m_layoutHeight << Qt::endl;
+        }
         if (monitor.m_scale != 1.0f) {
           outStream << "\t\t\tscale = " << monitor.m_scale << Qt::endl;
         }
         if (monitor.m_dpi != 96) {
           outStream << "\t\t\tdpi = " << monitor.m_dpi << Qt::endl;
+        }
+        if (monitor.m_needsPlacement) {
+          outStream << "\t\t\tneedsPlacement = true" << Qt::endl;
         }
       }
     }

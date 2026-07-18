@@ -85,6 +85,8 @@
 // enable; <unused>
 #define DESKFLOW_MSG_FAKE_INPUT DESKFLOW_HOOK_LAST_MSG + 12
 
+static void setCursorVisibility(bool visible);
+
 static void send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
 {
   INPUT inp;
@@ -417,6 +419,17 @@ LRESULT CALLBACK MSWindowsDesks::secondaryDeskProc(HWND hwnd, UINT msg, WPARAM w
 
 void MSWindowsDesks::deskMouseMove(int32_t x, int32_t y) const
 {
+  auto showSecondaryCursorIfHidden = [this]() {
+    if (m_isPrimary) {
+      return;
+    }
+    CURSORINFO info;
+    info.cbSize = sizeof(info);
+    if (GetCursorInfo(&info) && (info.flags & CURSOR_SHOWING) == 0) {
+      setCursorVisibility(true);
+    }
+  };
+
   if (SetCursorPos(x, y)) {
     POINT cursorPos;
     if (GetCursorPos(&cursorPos)) {
@@ -424,6 +437,7 @@ void MSWindowsDesks::deskMouseMove(int32_t x, int32_t y) const
     } else {
       LOG_DEBUG("SetCursorPos fake mouse move requested %d,%d; cursor position read failed: %lu", x, y, GetLastError());
     }
+    showSecondaryCursorIfHidden();
     return;
   }
 
@@ -466,6 +480,7 @@ void MSWindowsDesks::deskMouseMove(int32_t x, int32_t y) const
         x, y, clampedX, clampedY, normalizedX, normalizedY, sent, sendInputError, GetLastError()
     );
   }
+  showSecondaryCursorIfHidden();
 }
 
 void MSWindowsDesks::deskMouseRelativeMove(int32_t dx, int32_t dy) const
@@ -506,7 +521,7 @@ void MSWindowsDesks::deskMouseRelativeMove(int32_t dx, int32_t dy) const
  * the desired state. Windows maintains an internal counter for cursor visibility, and only
  * shows or hides the cursor when it reaches a certain threshold.
  */
-void setCursorVisibility(bool visible)
+static void setCursorVisibility(bool visible)
 {
   LOG_DEBUG("%s cursor", visible ? "showing" : "hiding");
 
@@ -542,7 +557,13 @@ void MSWindowsDesks::deskEnter(Desk *desk)
     ReleaseCapture();
   }
 
-  setCursorVisibility(true);
+  // Primary: show immediately (warpCursor already ran before enter).
+  // Secondary: leave() parks at screen center while hidden — showing here
+  // flashes the center before Client::enter's mouseMove reaches the edge.
+  // deskMouseMove shows the cursor after positioning instead.
+  if (m_isPrimary) {
+    setCursorVisibility(true);
+  }
 
   SetWindowPos(desk->m_window, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW);
 

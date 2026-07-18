@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main Deskflow window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:event:default",
+    "core:window:default",
+    "core:tray:default",
+    "opener:default",
+    "shell:allow-open",
+    "dialog:default",
+    "process:default"
+  ]
+}

@@ -24,4 +24,5 @@ private Q_SLOTS:
   void detectExitDirectionCorner();
   void clampToMonitor();
   void activeSidesMatchTransitions();
+  void dpiAwareWorldMapping();
 };

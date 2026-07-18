@@ -9,6 +9,7 @@
 #include "server/Config.h"
 
 #include "base/IEventQueue.h"
+#include "base/Log.h"
 #include "deskflow/DeskflowException.h"
 #include "deskflow/KeyMap.h"
 #include "deskflow/KeyTypes.h"
@@ -823,6 +824,9 @@ void Config::readSectionScreens(ConfigReadContext &s)
         addOption(screen, kOptionScreenSwitchCornerSize, s.parseInt(value));
       } else if (name == "preserveFocus") {
         addOption(screen, kOptionScreenPreserveFocus, s.parseBoolean(value));
+      } else if (name == "stickyKeys") {
+        // Older/alternate UIs emitted this; core has no stickyKeys screen option.
+        LOG_WARN("ignoring unsupported screen option \"%s\" on \"%s\"", name.c_str(), screen.c_str());
       } else {
         // unknown argument
         throw ServerConfigReadException(s, "unknown argument \"%{1}\"", name);
@@ -944,6 +948,7 @@ void Config::readSectionAliases(ConfigReadContext &s)
 void Config::readSectionDisplayLayouts(ConfigReadContext &s)
 {
   m_workspaceLayout = WorkspaceLayout{};
+  m_workspaceLayout.m_version = 1;
   std::string line;
   std::string machine;
   std::string monitor;
@@ -974,6 +979,12 @@ void Config::readSectionDisplayLayouts(ConfigReadContext &s)
       currentMonitor->m_scale = static_cast<float>(std::stod(value));
     } else if (name == "dpi") {
       currentMonitor->m_dpi = s.parseInt(value);
+    } else if (name == "layoutWidth") {
+      currentMonitor->m_layoutWidth = s.parseInt(value);
+    } else if (name == "layoutHeight") {
+      currentMonitor->m_layoutHeight = s.parseInt(value);
+    } else if (name == "needsPlacement") {
+      currentMonitor->m_needsPlacement = (value == "true" || value == "1");
     } else {
       throw ServerConfigReadException(s, "unknown monitor property \"%{1}\"", name);
     }
@@ -981,6 +992,21 @@ void Config::readSectionDisplayLayouts(ConfigReadContext &s)
 
   while (s.readLine(line)) {
     if (line == "end") {
+      m_workspaceLayout.ensureLayoutSizes();
+      if (m_workspaceLayout.m_version < 2) {
+        // Migrate v1 pixel-world configs: layout sizes equal pixel sizes at dpi 96 semantics.
+        for (auto &machineLayout : m_workspaceLayout.m_machines) {
+          for (auto &mon : machineLayout.m_monitors) {
+            if (mon.m_layoutWidth <= 0) {
+              mon.m_layoutWidth = mon.m_width;
+            }
+            if (mon.m_layoutHeight <= 0) {
+              mon.m_layoutHeight = mon.m_height;
+            }
+          }
+        }
+        m_workspaceLayout.m_version = 2;
+      }
       return;
     }
 
@@ -990,6 +1016,17 @@ void Config::readSectionDisplayLayouts(ConfigReadContext &s)
     }
     if (line == "advancedLayout = false" || line == "advancedLayout=false") {
       m_workspaceLayout.m_enabled = false;
+      continue;
+    }
+
+    if (line.rfind("version", 0) == 0) {
+      std::string::size_type eq = line.find('=');
+      if (eq != std::string::npos) {
+        eq = line.find_first_not_of(" \t", eq + 1);
+        if (eq != std::string::npos) {
+          m_workspaceLayout.m_version = s.parseInt(line.substr(eq));
+        }
+      }
       continue;
     }
 
@@ -1062,7 +1099,7 @@ WorkspaceLayout &Config::getWorkspaceLayout()
 
 bool Config::workspaceLayoutEqual(const WorkspaceLayout &a, const WorkspaceLayout &b)
 {
-  if (a.m_enabled != b.m_enabled || a.m_machines.size() != b.m_machines.size()) {
+  if (a.m_enabled != b.m_enabled || a.m_version != b.m_version || a.m_machines.size() != b.m_machines.size()) {
     return false;
   }
 
@@ -1077,7 +1114,9 @@ bool Config::workspaceLayoutEqual(const WorkspaceLayout &a, const WorkspaceLayou
       const auto &db = mb.m_monitors[j];
       if (da.m_id != db.m_id || da.m_name != db.m_name || da.m_worldX != db.m_worldX || da.m_worldY != db.m_worldY ||
           da.m_width != db.m_width || da.m_height != db.m_height || da.m_localX != db.m_localX ||
-          da.m_localY != db.m_localY || da.m_dpi != db.m_dpi || std::abs(da.m_scale - db.m_scale) > 0.001f) {
+          da.m_localY != db.m_localY || da.m_dpi != db.m_dpi || da.m_layoutWidth != db.m_layoutWidth ||
+          da.m_layoutHeight != db.m_layoutHeight || da.m_needsPlacement != db.m_needsPlacement ||
+          std::abs(da.m_scale - db.m_scale) > 0.001f) {
         return false;
       }
     }
@@ -1092,6 +1131,7 @@ void Config::writeDisplayLayouts(std::ostream &s, const WorkspaceLayout &layout)
   }
 
   s << "section: display_layouts" << std::endl;
+  s << "\tversion = " << layout.m_version << std::endl;
   s << "\tadvancedLayout = " << (layout.m_enabled ? "true" : "false") << std::endl;
   for (const auto &machine : layout.m_machines) {
     s << "\t" << machine.m_name << ":" << std::endl;
@@ -1109,11 +1149,20 @@ void Config::writeDisplayLayouts(std::ostream &s, const WorkspaceLayout &layout)
       s << "\t\t\theight = " << monitor.m_height << std::endl;
       s << "\t\t\tlocalX = " << monitor.m_localX << std::endl;
       s << "\t\t\tlocalY = " << monitor.m_localY << std::endl;
+      if (monitor.m_layoutWidth > 0) {
+        s << "\t\t\tlayoutWidth = " << monitor.m_layoutWidth << std::endl;
+      }
+      if (monitor.m_layoutHeight > 0) {
+        s << "\t\t\tlayoutHeight = " << monitor.m_layoutHeight << std::endl;
+      }
       if (monitor.m_scale != 1.0f) {
         s << "\t\t\tscale = " << monitor.m_scale << std::endl;
       }
       if (monitor.m_dpi != 96) {
         s << "\t\t\tdpi = " << monitor.m_dpi << std::endl;
+      }
+      if (monitor.m_needsPlacement) {
+        s << "\t\t\tneedsPlacement = true" << std::endl;
       }
     }
   }

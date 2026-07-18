@@ -36,14 +36,20 @@ add_library(server STATIC
   Config.h
   DisplayLayout.cpp
   DisplayLayout.h
+  EdgeGraph.cpp
+  EdgeGraph.h
   InputFilter.cpp
   InputFilter.h
+  PoseMerge.cpp
+  PoseMerge.h
   PrimaryClient.cpp
   PrimaryClient.h
   Server.cpp
   Server.h
   SwitchDecision.cpp
   SwitchDecision.h
+  SwitchEngine.cpp
+  SwitchEngine.h
 )
 
 target_link_libraries(server PUBLIC common app)

@@ -11,17 +11,21 @@
 using namespace deskflow::server;
 
 static DisplayRect makeMonitor(
-    const std::string &id, int32_t worldX, int32_t worldY, int32_t w, int32_t h, int32_t localX = 0, int32_t localY = 0
+    const std::string &id, int32_t worldX, int32_t worldY, int32_t w, int32_t h, int32_t localX = 0, int32_t localY = 0,
+    int32_t dpi = kReferenceDpi
 )
 {
   DisplayRect monitor;
   monitor.m_id = id;
+  monitor.m_name = id;
   monitor.m_worldX = worldX;
   monitor.m_worldY = worldY;
   monitor.m_width = w;
   monitor.m_height = h;
   monitor.m_localX = localX;
   monitor.m_localY = localY;
+  monitor.m_dpi = dpi;
+  monitor.ensureLayoutSizes();
   return monitor;
 }
 
@@ -32,15 +36,16 @@ static WorkspaceLayout makeTwoMachineLayout()
 
   MachineLayout desktop;
   desktop.m_name = "desktop";
-  desktop.m_monitors.push_back(makeMonitor("display1", 0, 0, 3840, 2160));
-  desktop.m_monitors.push_back(makeMonitor("display2", 3840, 400, 2560, 1440));
+  desktop.m_monitors.push_back(makeMonitor("display1", 0, 0, 3840, 2160, 0, 0));
+  desktop.m_monitors.push_back(makeMonitor("display2", 3840, 400, 2560, 1440, 3840, 400));
 
   MachineLayout laptop;
   laptop.m_name = "laptop";
-  laptop.m_monitors.push_back(makeMonitor("display1", 3840, 600, 1920, 1200));
+  laptop.m_monitors.push_back(makeMonitor("display1", 3840, 600, 1920, 1200, 0, 0));
 
   layout.m_machines.push_back(desktop);
   layout.m_machines.push_back(laptop);
+  layout.ensureLayoutSizes();
   return layout;
 }
 
@@ -49,7 +54,8 @@ void DisplayLayoutTests::fullEdgeOverlap()
   const auto layout = makeTwoMachineLayout();
   GeometryRouter router(layout);
 
-  const auto result = router.findTransition("desktop", 3840, 1000, Direction::Right);
+  // Right edge of display1 (realistic local coords; display2 starts at local 3840).
+  const auto result = router.findTransition("desktop", 3839, 1000, Direction::Right);
   QVERIFY(result.has_value());
   QCOMPARE(result->m_dstMachine, std::string("laptop"));
   QCOMPARE(result->m_dstX, 0);
@@ -61,11 +67,11 @@ void DisplayLayoutTests::partialOverlap()
   const auto layout = makeTwoMachineLayout();
   GeometryRouter router(layout);
 
-  const auto inOverlap = router.findTransition("desktop", 3840, 1000, Direction::Right);
+  const auto inOverlap = router.findTransition("desktop", 3839, 1000, Direction::Right);
   QVERIFY(inOverlap.has_value());
   QCOMPARE(inOverlap->m_dstMachine, std::string("laptop"));
 
-  const auto belowOverlap = router.findTransition("desktop", 3840, 500, Direction::Right);
+  const auto belowOverlap = router.findTransition("desktop", 3839, 500, Direction::Right);
   QVERIFY(!belowOverlap.has_value());
 }
 
@@ -95,8 +101,11 @@ void DisplayLayoutTests::sameMachineNoSwitch()
   const auto layout = makeTwoMachineLayout();
   GeometryRouter router(layout);
 
-  const auto result = router.findTransition("desktop", 2000, 1000, Direction::Right);
-  QVERIFY(!result.has_value());
+  const auto result = router.findTransition("desktop", 3839, 1000, Direction::Right);
+  QVERIFY(result.has_value());
+  // Internal edge between display1 and display2 must not switch machines when exiting into display2.
+  const auto internal = router.findTransition("desktop", 2000, 1000, Direction::Right);
+  QVERIFY(!internal.has_value());
 }
 
 void DisplayLayoutTests::stackedMonitors()
@@ -106,7 +115,7 @@ void DisplayLayoutTests::stackedMonitors()
 
   MachineLayout host;
   host.m_name = "host";
-  host.m_monitors.push_back(makeMonitor("top", 0, 0, 1920, 1080));
+  host.m_monitors.push_back(makeMonitor("top", 0, 0, 1920, 1080, 0, 0));
   host.m_monitors.push_back(makeMonitor("bottom", 0, 1080, 1920, 1080, 0, 1080));
 
   MachineLayout remote;
@@ -256,6 +265,18 @@ void DisplayLayoutTests::activeSidesMatchTransitions()
   GeometryRouter gapRouter(gapLayout);
   const uint32_t leftSides = gapRouter.getActiveSidesForMachine("left");
   QVERIFY((leftSides & static_cast<uint32_t>(RightMask)) == 0);
+}
+
+void DisplayLayoutTests::dpiAwareWorldMapping()
+{
+  DisplayRect low = makeMonitor("low", 0, 0, 1920, 1080, 0, 0, 96);
+  DisplayRect high = makeMonitor("high", 1920, 0, 3840, 2160, 0, 0, 192);
+  QCOMPARE(low.layoutWidth(), 1920);
+  QCOMPARE(high.layoutWidth(), 1920);
+
+  // Midpoint of high-dpi local maps to midpoint of layout width.
+  QCOMPARE(high.localToWorldX(1920), 1920 + 960);
+  QCOMPARE(high.worldToLocalX(1920 + 960), 1920);
 }
 
 QTEST_MAIN(DisplayLayoutTests)

@@ -25,17 +25,64 @@ jobs:
   # Quality gate to allow PR merge, used in the branch protection rules.
   ci-passed:
     runs-on: ubuntu-latest
-    needs: [main-build, test-results, unix, flatpak]
+    needs: [main-build, test-results, unix, flatpak, deskflow-ui]
     if: always()
 
     steps:
       - name: Check all steps passed
         run: |
-          if [[ ${{needs.main-build.result}} == 'success' && ${{needs.test-results.result}} == 'success' && ${{needs.unix.result}} == 'success' && ${{needs.flatpak.result}} == 'success' ]]; then
+          if [[ ${{needs.main-build.result}} == 'success' && ${{needs.test-results.result}} == 'success' && ${{needs.unix.result}} == 'success' && ${{needs.flatpak.result}} == 'success' && ${{needs.deskflow-ui.result}} == 'success' ]]; then
             echo "✅ CI passed" > $GITHUB_STEP_SUMMARY
           else
             exit 1
           fi
+
+  # Parallel Tauri 2 + React UI (ships beside Qt until cutover).
+  deskflow-ui:
+    name: deskflow-ui
+    runs-on: windows-2022
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ui
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ui/src-tauri -> target
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Generate version metadata
+        run: npm run gen:version
+
+      - name: Build Tauri UI
+        run: npm run tauri build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deskflow-ui-windows-x64
+          path: |
+            ui/src-tauri/target/release/deskflow-ui.exe
+            ui/src-tauri/target/release/bundle/msi/*.msi
+            ui/src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
 
   # Summary of test results, combined from test result artifacts.
   # Runs even if the tests fail to provide a summary of the failures.

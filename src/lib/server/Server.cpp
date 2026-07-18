@@ -24,8 +24,10 @@
 #include "server/ClientProxy.h"
 #include "server/ClientProxyUnknown.h"
 #include "server/DisplayLayout.h"
+#include "server/PoseMerge.h"
 #include "server/PrimaryClient.h"
 #include "server/SwitchDecision.h"
+#include "server/SwitchEngine.h"
 
 #include "common/Settings.h"
 
@@ -262,6 +264,7 @@ void Server::mergeReportedClientDisplays(
   }
 
   auto &layout = m_config->getWorkspaceLayout();
+  layout.ensureLayoutSizes();
   MachineLayout *machine = layout.findMachine(clientName);
   if (machine == nullptr) {
     MachineLayout entry;
@@ -270,39 +273,15 @@ void Server::mergeReportedClientDisplays(
     machine = &layout.m_machines.back();
   }
 
-  std::vector<DisplayRect> mergedDisplays = displays;
-  if (!overwrite && !machine->m_monitors.empty()) {
-    for (std::size_t i = 0; i < mergedDisplays.size(); ++i) {
-      DisplayRect &display = mergedDisplays[i];
-      const DisplayRect *existing = nullptr;
-
-      if (!display.m_id.empty()) {
-        for (const auto &monitor : machine->m_monitors) {
-          if (monitor.m_id == display.m_id) {
-            existing = &monitor;
-            break;
-          }
-        }
-      }
-
-      if (existing == nullptr && display.m_id.empty() && i < machine->m_monitors.size() &&
-          machine->m_monitors[i].m_id.empty() &&
-          machine->m_monitors[i].m_width == display.m_width && machine->m_monitors[i].m_height == display.m_height) {
-        existing = &machine->m_monitors[i];
-      }
-
-      if (existing != nullptr) {
-        display.m_worldX = existing->m_worldX;
-        display.m_worldY = existing->m_worldY;
-      }
-    }
-  }
-
-  machine->m_monitors = mergedDisplays;
+  const PoseMergeResult merge = mergeReportedDisplays(*machine, displays, overwrite);
+  layout.ensureLayoutSizes();
   LOG_INFO(
-      "updated display layout for \"%s\" with %zu monitor(s)", clientName.c_str(), machine->m_monitors.size()
+      "updated display layout for \"%s\" with %zu monitor(s) (parked=%d changed=%d)", clientName.c_str(),
+      machine->m_monitors.size(), merge.m_parkedCount, merge.m_changed ? 1 : 0
   );
-  persistServerConfigFile(*m_config);
+  if (merge.m_changed) {
+    persistServerConfigFile(*m_config);
+  }
 }
 
 void Server::adoptClient(BaseClientProxy *client)
@@ -512,6 +491,7 @@ void Server::switchScreen(BaseClientProxy *dst, int32_t x, int32_t y, bool forSc
   stopSwitch();
 
   const bool switchingFromPrimaryToSecondary = m_active == m_primaryClient && dst != m_primaryClient;
+  const bool switchingFromSecondaryToPrimary = m_active != m_primaryClient && dst == m_primaryClient;
 
   // record new position
   m_x = x;
@@ -521,6 +501,7 @@ void Server::switchScreen(BaseClientProxy *dst, int32_t x, int32_t y, bool forSc
   m_xDelta2 = 0;
   m_yDelta2 = 0;
   m_dropSecondaryWarpDelta = switchingFromPrimaryToSecondary;
+  m_holdPrimaryJumpZone = switchingFromSecondaryToPrimary;
 
   // wrapping means leaving the active screen and entering it again.
   // since that's a waste of time we skip that and just warp the
@@ -835,8 +816,8 @@ BaseClientProxy *Server::mapToNeighborAdvanced(BaseClientProxy *src, Direction s
     return nullptr;
   }
 
-  GeometryRouter router(m_config->getWorkspaceLayout());
-  const auto transition = router.findTransition(getName(src), x, y, srcSide);
+  SwitchEngine engine(m_config->getWorkspaceLayout());
+  auto transition = engine.resolveDirection(getName(src), x, y, srcSide);
   if (!transition.has_value() || !transition->m_valid) {
     return nullptr;
   }
@@ -846,9 +827,16 @@ BaseClientProxy *Server::mapToNeighborAdvanced(BaseClientProxy *src, Direction s
     return nullptr;
   }
 
+  SwitchEngine::applyLandingInset(*transition, getJumpZoneSize(dst), transition->m_hasReverseNeighbor);
+  const MachineLayout *dstMachine = m_config->getWorkspaceLayout().findMachine(transition->m_dstMachine);
+  const DisplayRect *dstMonitor =
+      dstMachine == nullptr ? nullptr : dstMachine->findMonitorById(transition->m_dstMonitorId);
+  if (dstMonitor != nullptr) {
+    GeometryRouter::clampToMonitor(*dstMonitor, transition->m_dstX, transition->m_dstY);
+  }
+
   x = transition->m_dstX;
   y = transition->m_dstY;
-  avoidAdvancedJumpZone(dst, srcSide, x, y);
   return dst;
 }
 
@@ -865,69 +853,30 @@ bool Server::onMouseMovePrimaryAdvanced(int32_t x, int32_t y)
   m_x = x;
   m_y = y;
 
-  const std::string machineName = getName(m_active);
-  const MachineLayout *machine = m_config->getWorkspaceLayout().findMachine(machineName);
-  if (machine == nullptr) {
+  SwitchEngine engine(m_config->getWorkspaceLayout());
+  SwitchEngineCursor cursor;
+  cursor.m_machine = getName(m_active);
+  cursor.m_x = x;
+  cursor.m_y = y;
+  cursor.m_xDelta = m_xDelta;
+  cursor.m_yDelta = m_yDelta;
+  cursor.m_jumpZoneSize = getJumpZoneSize(m_active);
+  cursor.m_absoluteMode = true;
+
+  const auto candidates = engine.collectCandidates(cursor);
+  if (m_holdPrimaryJumpZone) {
+    if (candidates.empty()) {
+      m_holdPrimaryJumpZone = false;
+    } else {
+      // Stale edge event (or under-inset landing) after returning from a client.
+      LOG_DEBUG("holding primary jump zone after enter at %d,%d", x, y);
+      noSwitch(x, y);
+      return false;
+    }
+  }
+  if (candidates.empty()) {
     noSwitch(x, y);
     return false;
-  }
-
-  const DisplayRect *monitor = machine->findMonitorAtLocal(x, y);
-  if (monitor == nullptr) {
-    noSwitch(x, y);
-    return false;
-  }
-
-  const int32_t zoneSize = getJumpZoneSize(m_active);
-  const int32_t left = monitor->m_localX;
-  const int32_t right = monitor->m_localX + monitor->m_width - 1;
-  const int32_t top = monitor->m_localY;
-  const int32_t bottom = monitor->m_localY + monitor->m_height - 1;
-
-  int32_t xc = x;
-  int32_t yc = y;
-  if (xc < left + zoneSize) {
-    xc = left;
-  } else if (xc >= right - zoneSize + 1) {
-    xc = right;
-  }
-  if (yc < top + zoneSize) {
-    yc = top;
-  } else if (yc >= bottom - zoneSize + 1) {
-    yc = bottom;
-  }
-
-  using enum Direction;
-  auto dirh = NoDirection;
-  auto dirv = NoDirection;
-  int32_t xh = x;
-  int32_t yv = y;
-  if (x <= left + zoneSize) {
-    xh -= zoneSize;
-    dirh = Left;
-  } else if (x >= right - zoneSize) {
-    xh += zoneSize;
-    dirh = Right;
-  }
-  if (y <= top + zoneSize) {
-    yv -= zoneSize;
-    dirv = Top;
-  } else if (y >= bottom - zoneSize) {
-    yv += zoneSize;
-    dirv = Bottom;
-  }
-
-  if (dirh == NoDirection && dirv == NoDirection) {
-    noSwitch(x, y);
-    return false;
-  }
-
-  std::vector<SwitchCandidate> candidates;
-  if (dirh != NoDirection) {
-    candidates.push_back(makePrimarySwitchCandidate(dirh, xh, y, xc, yc, true));
-  }
-  if (dirv != NoDirection) {
-    candidates.push_back(makePrimarySwitchCandidate(dirv, x, yv, xc, yc, true));
   }
   return tryPrimarySwitchFromCandidates(candidates, x, y, true);
 }
@@ -970,32 +919,8 @@ void Server::onMouseMoveSecondaryAdvanced(int32_t dx, int32_t dy)
   m_x += dx;
   m_y += dy;
 
-  const DisplayRect *monitor = machine->findMonitorAtLocal(m_x, m_y);
-  if (monitor == nullptr) {
-    monitor = GeometryRouter::findMonitorAtLocal(*machine, xOld, yOld);
-  }
-  if (monitor == nullptr) {
-    m_x = xOld;
-    m_y = yOld;
-    onMouseMoveSecondaryLegacy(dx, dy);
-    return;
-  }
-
-  int32_t xc = m_x;
-  int32_t yc = m_y;
-  GeometryRouter::clampToMonitor(*monitor, xc, yc);
-
-  using enum Direction;
-  Direction dir = NoDirection;
-  if (m_x < monitor->m_localX) {
-    dir = Left;
-  } else if (m_x > monitor->m_localX + monitor->m_width - 1) {
-    dir = Right;
-  } else if (m_y < monitor->m_localY) {
-    dir = Top;
-  } else if (m_y > monitor->m_localY + monitor->m_height - 1) {
-    dir = Bottom;
-  } else {
+  const DisplayRect *interior = machine->findMonitorAtLocal(m_x, m_y);
+  if (interior != nullptr) {
     noSwitch(m_x, m_y);
     if (m_x != xOld || m_y != yOld) {
       m_active->mouseMove(m_x, m_y);
@@ -1003,17 +928,40 @@ void Server::onMouseMoveSecondaryAdvanced(int32_t dx, int32_t dy)
     return;
   }
 
-  int32_t newX = m_x;
-  int32_t newY = m_y;
-  BaseClientProxy *newScreen = mapToNeighborAdvanced(m_active, dir, newX, newY);
-  if (newScreen != nullptr && isSwitchOkay(newScreen, dir, newX, newY, xc, yc)) {
-    switchScreen(newScreen, newX, newY, false);
+  const DisplayRect *refMonitor = GeometryRouter::findMonitorAtLocal(*machine, xOld, yOld);
+  if (refMonitor == nullptr) {
+    m_x = xOld;
+    m_y = yOld;
+    onMouseMoveSecondaryLegacy(dx, dy);
     return;
+  }
+
+  SwitchEngine engine(m_config->getWorkspaceLayout());
+  SwitchEngineCursor cursor;
+  cursor.m_machine = machineName;
+  cursor.m_x = m_x;
+  cursor.m_y = m_y;
+  cursor.m_xDelta = m_xDelta;
+  cursor.m_yDelta = m_yDelta;
+  // Landing inset must clear the primary jump zone on reverse; secondary
+  // getJumpZoneSize() is always 0 and would under-inset (oscillation).
+  cursor.m_jumpZoneSize = m_primaryClient->getJumpZoneSize();
+  cursor.m_absoluteMode = false;
+
+  const auto candidates = engine.collectCandidates(cursor);
+  const auto best = SwitchGate::pickBestCandidate(candidates, m_xDelta, m_yDelta);
+  if (best.has_value()) {
+    BaseClientProxy *dst = findClientByName(best->m_dstMachine);
+    if (dst != nullptr &&
+        isSwitchOkay(dst, best->m_direction, best->m_dstX, best->m_dstY, best->m_xActive, best->m_yActive)) {
+      switchScreen(dst, best->m_dstX, best->m_dstY, false);
+      return;
+    }
   }
 
   m_x = xOld + dx;
   m_y = yOld + dy;
-  GeometryRouter::clampToMonitor(*monitor, m_x, m_y);
+  GeometryRouter::clampToMonitor(*refMonitor, m_x, m_y);
   if (m_x != xOld || m_y != yOld) {
     m_active->mouseMove(m_x, m_y);
   }
@@ -1067,55 +1015,20 @@ void Server::avoidJumpZone(const BaseClientProxy *dst, Direction dir, int32_t &x
 
 void Server::avoidAdvancedJumpZone(const BaseClientProxy *dst, Direction dir, int32_t &x, int32_t &y) const
 {
-  if (dst == nullptr || dir == Direction::NoDirection) {
+  // Landing inset is handled by SwitchEngine::applyLandingInset via mapToNeighborAdvanced.
+  // Kept for API compatibility; delegates to geometry clamp only.
+  if (dst == nullptr || dir == Direction::NoDirection || !m_config->hasAdvancedLayout()) {
     return;
-  }
-
-  const int32_t inset = std::max<int32_t>(1, getJumpZoneSize(dst) + 1);
-
-  switch (dir) {
-  case Direction::Left:
-    x -= inset;
-    break;
-  case Direction::Right:
-    x += inset;
-    break;
-  case Direction::Top:
-    y -= inset;
-    break;
-  case Direction::Bottom:
-    y += inset;
-    break;
-  case Direction::NoDirection:
-    break;
   }
 
   const MachineLayout *machine = m_config->getWorkspaceLayout().findMachine(getName(dst));
-  const DisplayRect *monitor = machine == nullptr ? nullptr : machine->findMonitorAtLocal(x, y);
-  if (monitor == nullptr && machine != nullptr) {
-    for (const auto &candidate : machine->m_monitors) {
-      int32_t clampedX = x;
-      int32_t clampedY = y;
-      GeometryRouter::clampToMonitor(candidate, clampedX, clampedY);
-      if (std::abs(clampedX - x) <= inset && std::abs(clampedY - y) <= inset) {
-        monitor = &candidate;
-        break;
-      }
-    }
-  }
-
-  if (monitor != nullptr) {
-    GeometryRouter::clampToMonitor(*monitor, x, y);
+  if (machine == nullptr) {
     return;
   }
-
-  int32_t dx = 0;
-  int32_t dy = 0;
-  int32_t dw = 0;
-  int32_t dh = 0;
-  dst->getShape(dx, dy, dw, dh);
-  x = std::clamp(x, dx, dx + dw - 1);
-  y = std::clamp(y, dy, dy + dh - 1);
+  const DisplayRect *monitor = machine->findMonitorAtLocal(x, y);
+  if (monitor != nullptr) {
+    GeometryRouter::clampToMonitor(*monitor, x, y);
+  }
 }
 
 SwitchGateSettings Server::buildSwitchGateSettings(const std::string &activeName) const
@@ -1773,12 +1686,19 @@ void Server::handleSwitchWaitTimeout()
 
   int32_t x = m_switchWaitX;
   int32_t y = m_switchWaitY;
-  BaseClientProxy *dst = m_config->hasAdvancedLayout() ? mapToNeighborAdvanced(m_active, m_switchDir, x, y)
-                                                       : mapToNeighbor(m_active, m_switchDir, x, y);
-  if (dst == nullptr || dst != m_switchScreen) {
-    LOG_VERBOSE("switch gate: %s", switchGateReasonName(SwitchGateReason::StaleRoute));
-    stopSwitch();
-    return;
+  BaseClientProxy *dst = m_switchScreen;
+
+  if (m_config->hasAdvancedLayout()) {
+    // Wait coords are already the candidate landing (destination). Re-probing
+    // via mapToNeighborAdvanced would treat them as source-local and fail or
+    // remap to a bogus edge (often top/center).
+  } else {
+    dst = mapToNeighbor(m_active, m_switchDir, x, y);
+    if (dst == nullptr || dst != m_switchScreen) {
+      LOG_VERBOSE("switch gate: %s", switchGateReasonName(SwitchGateReason::StaleRoute));
+      stopSwitch();
+      return;
+    }
   }
 
   int32_t xc = m_x;
@@ -2187,7 +2107,14 @@ bool Server::onMouseMovePrimary(int32_t x, int32_t y)
     dirv = Bottom;
   }
   if (dirh == NoDirection && dirv == NoDirection) {
+    m_holdPrimaryJumpZone = false;
     // still on local screen
+    noSwitch(x, y);
+    return false;
+  }
+
+  if (m_holdPrimaryJumpZone) {
+    LOG_DEBUG("holding primary jump zone after enter at %d,%d", x, y);
     noSwitch(x, y);
     return false;
   }

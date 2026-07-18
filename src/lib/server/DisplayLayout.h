@@ -15,6 +15,12 @@
 
 namespace deskflow::server {
 
+//! Shared abutment tolerance (layout units) for router and editors.
+inline constexpr int32_t kEdgeAbutTolerance = 2;
+
+//! Reference DPI for density-independent layout units.
+inline constexpr int32_t kReferenceDpi = 96;
+
 //! A single physical display within a machine layout
 struct DisplayRect
 {
@@ -22,20 +28,33 @@ struct DisplayRect
   std::string m_name;
   int32_t m_worldX = 0;
   int32_t m_worldY = 0;
+  //! Pixel width/height in the machine's local desktop space.
   int32_t m_width = 0;
   int32_t m_height = 0;
   int32_t m_localX = 0;
   int32_t m_localY = 0;
   float m_scale = 1.0f;
-  int32_t m_dpi = 96;
+  int32_t m_dpi = kReferenceDpi;
+  //! Density-independent layout size in world space. 0 means derive from pixels+dpi.
+  int32_t m_layoutWidth = 0;
+  int32_t m_layoutHeight = 0;
+  bool m_needsPlacement = false;
 
   bool containsLocal(int32_t x, int32_t y) const;
   bool containsWorld(int32_t x, int32_t y) const;
+
+  int32_t layoutWidth() const;
+  int32_t layoutHeight() const;
+  void ensureLayoutSizes();
+
   int32_t localToWorldX(int32_t localX) const;
   int32_t localToWorldY(int32_t localY) const;
   int32_t worldToLocalX(int32_t worldX) const;
   int32_t worldToLocalY(int32_t worldY) const;
 };
+
+//! Derive density-independent size from pixel extent and dpi/scale.
+int32_t layoutSizeFromPixels(int32_t pixels, int32_t dpi, float scale);
 
 //! All displays attached to one DeskFlow screen/client
 struct MachineLayout
@@ -45,17 +64,22 @@ struct MachineLayout
 
   const DisplayRect *findMonitorAtLocal(int32_t x, int32_t y) const;
   const DisplayRect *findMonitorAtWorld(int32_t x, int32_t y) const;
+  const DisplayRect *findMonitorById(const std::string &id) const;
+  DisplayRect *findMonitorById(const std::string &id);
   void getBoundingLocal(int32_t &x, int32_t &y, int32_t &w, int32_t &h) const;
+  void ensureLayoutSizes();
 };
 
 //! Global workspace containing all machine layouts
 struct WorkspaceLayout
 {
   bool m_enabled = false;
+  int32_t m_version = 2;
   std::vector<MachineLayout> m_machines;
 
   const MachineLayout *findMachine(const std::string &name) const;
   MachineLayout *findMachine(const std::string &name);
+  void ensureLayoutSizes();
 };
 
 //! Result of a geometry-based screen transition
@@ -63,9 +87,11 @@ struct TransitionResult
 {
   bool m_valid = false;
   std::string m_dstMachine;
+  std::string m_dstMonitorId;
   int32_t m_dstX = 0;
   int32_t m_dstY = 0;
   Direction m_direction = Direction::NoDirection;
+  bool m_hasReverseNeighbor = false;
 };
 
 //! Routes cursor transitions using per-monitor world geometry
@@ -91,11 +117,12 @@ public:
   //! Return a DirectionMask bitmask of edges that can transition to another machine.
   uint32_t getActiveSidesForMachine(const std::string &machineName) const;
 
-private:
-  std::optional<TransitionResult> findNeighborAcrossEdge(
-      const MachineLayout &srcMachine, const DisplayRect &srcMonitor, int32_t localX, int32_t localY, Direction exitDir
+  //! True if destination machine has a reverse segment on the entered edge.
+  bool hasReverseNeighbor(
+      const std::string &dstMachine, const std::string &dstMonitorId, Direction enteredFromSrcExit
   ) const;
 
+private:
   const WorkspaceLayout &m_layout;
 };
 

@@ -469,6 +469,9 @@ private:
   int32_t m_xDelta2 = 0;
   int32_t m_yDelta2 = 0;
   bool m_dropSecondaryWarpDelta = false;
+  //! After secondary→primary, ignore jump-zone switches until the cursor is
+  //! interior once. Absorbs stale absolute edge events that would oscillate.
+  bool m_holdPrimaryJumpZone = false;
 
   int32_t m_xSaver;
   int32_t m_ySaver;

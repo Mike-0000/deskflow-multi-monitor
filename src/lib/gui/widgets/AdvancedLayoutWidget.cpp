@@ -6,6 +6,9 @@
 
 #include "widgets/AdvancedLayoutWidget.h"
 
+#include "server/DisplayLayout.h"
+#include "server/PoseMerge.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QFormLayout>
@@ -27,7 +30,8 @@
 namespace {
 
 constexpr qreal kSceneScale = 0.15;
-constexpr int32_t kSnapDistance = 24;
+// Keep in sync with deskflow::server::kEdgeAbutTolerance (+ editor grab distance).
+constexpr int32_t kSnapDistance = 48;
 
 class MonitorRectItem : public QGraphicsRectItem
 {
@@ -64,6 +68,7 @@ public:
       }
       m_monitor->m_worldX = static_cast<int32_t>(std::lround(pos.x() / kSceneScale));
       m_monitor->m_worldY = static_cast<int32_t>(std::lround(pos.y() / kSceneScale));
+      m_monitor->m_needsPlacement = false;
       return pos;
     }
 
@@ -130,6 +135,8 @@ deskflow::server::WorkspaceLayout AdvancedLayoutWidget::workspaceLayout() const
 {
   deskflow::server::WorkspaceLayout layout = m_layout;
   layout.m_enabled = m_enableAdvanced->isChecked();
+  layout.m_version = 2;
+  layout.ensureLayoutSizes();
   return layout;
 }
 
@@ -166,10 +173,12 @@ void AdvancedLayoutWidget::importLocalDisplays()
     monitor.m_localY = geo.y();
     monitor.m_width = geo.width();
     monitor.m_height = geo.height();
-    monitor.m_worldX = geo.x();
-    monitor.m_worldY = geo.y();
     monitor.m_scale = static_cast<float>(screen->devicePixelRatio());
     monitor.m_dpi = static_cast<int32_t>(screen->logicalDotsPerInch());
+    monitor.ensureLayoutSizes();
+    // Seed world from density-independent local layout for first placement only.
+    monitor.m_worldX = deskflow::server::layoutSizeFromPixels(geo.x(), monitor.m_dpi, monitor.m_scale);
+    monitor.m_worldY = deskflow::server::layoutSizeFromPixels(geo.y(), monitor.m_dpi, monitor.m_scale);
     displays.push_back(monitor);
   }
 
@@ -206,11 +215,9 @@ void AdvancedLayoutWidget::importDisplaysForCurrentMachine(
     return;
   }
 
-  if (!machine->m_monitors.empty() && !overwrite) {
-    return;
-  }
-
-  machine->m_monitors = displays;
+  deskflow::server::mergeReportedDisplays(*machine, displays, overwrite);
+  m_layout.m_version = 2;
+  m_layout.ensureLayoutSizes();
   refreshScene();
   Q_EMIT layoutChanged();
 }
@@ -228,10 +235,12 @@ QPointF AdvancedLayoutWidget::snapMonitorPosition(
     return proposedPos;
   }
 
+  const int32_t movingW = movingMonitor->layoutWidth();
+  const int32_t movingH = movingMonitor->layoutHeight();
   const int32_t proposedX = static_cast<int32_t>(std::lround(proposedPos.x() / kSceneScale));
   const int32_t proposedY = static_cast<int32_t>(std::lround(proposedPos.y() / kSceneScale));
-  const int32_t proposedRight = proposedX + movingMonitor->m_width;
-  const int32_t proposedBottom = proposedY + movingMonitor->m_height;
+  const int32_t proposedRight = proposedX + movingW;
+  const int32_t proposedBottom = proposedY + movingH;
 
   int32_t snappedX = proposedX;
   int32_t snappedY = proposedY;
@@ -243,7 +252,7 @@ QPointF AdvancedLayoutWidget::snapMonitorPosition(
   };
 
   auto considerX = [&](int32_t candidateX, const deskflow::server::DisplayRect &other) {
-    if (!intervalsOverlap(proposedY, proposedBottom, other.m_worldY, other.m_worldY + other.m_height)) {
+    if (!intervalsOverlap(proposedY, proposedBottom, other.m_worldY, other.m_worldY + other.layoutHeight())) {
       return;
     }
     const int32_t dx = std::abs(candidateX - proposedX);
@@ -254,7 +263,7 @@ QPointF AdvancedLayoutWidget::snapMonitorPosition(
   };
 
   auto considerY = [&](int32_t candidateY, const deskflow::server::DisplayRect &other) {
-    if (!intervalsOverlap(proposedX, proposedRight, other.m_worldX, other.m_worldX + other.m_width)) {
+    if (!intervalsOverlap(proposedX, proposedRight, other.m_worldX, other.m_worldX + other.layoutWidth())) {
       return;
     }
     const int32_t dy = std::abs(candidateY - proposedY);
@@ -270,15 +279,16 @@ QPointF AdvancedLayoutWidget::snapMonitorPosition(
         continue;
       }
 
-      considerX(other.m_worldX - movingMonitor->m_width, other);
-      considerX(other.m_worldX + other.m_width, other);
+      // Exact abutment candidates (0 gap) — matches EdgeSegmentGraph contract.
+      considerX(other.m_worldX - movingW, other);
+      considerX(other.m_worldX + other.layoutWidth(), other);
       considerX(other.m_worldX, other);
-      considerX(other.m_worldX + other.m_width - movingMonitor->m_width, other);
+      considerX(other.m_worldX + other.layoutWidth() - movingW, other);
 
-      considerY(other.m_worldY - movingMonitor->m_height, other);
-      considerY(other.m_worldY + other.m_height, other);
+      considerY(other.m_worldY - movingH, other);
+      considerY(other.m_worldY + other.layoutHeight(), other);
       considerY(other.m_worldY, other);
-      considerY(other.m_worldY + other.m_height - movingMonitor->m_height, other);
+      considerY(other.m_worldY + other.layoutHeight() - movingH, other);
     }
   }
 
@@ -299,14 +309,14 @@ void AdvancedLayoutWidget::refreshScene()
       if (first) {
         minX = monitor.m_worldX;
         minY = monitor.m_worldY;
-        maxX = monitor.m_worldX + monitor.m_width;
-        maxY = monitor.m_worldY + monitor.m_height;
+        maxX = monitor.m_worldX + monitor.layoutWidth();
+        maxY = monitor.m_worldY + monitor.layoutHeight();
         first = false;
       } else {
         minX = std::min(minX, monitor.m_worldX);
         minY = std::min(minY, monitor.m_worldY);
-        maxX = std::max(maxX, monitor.m_worldX + monitor.m_width);
-        maxY = std::max(maxY, monitor.m_worldY + monitor.m_height);
+        maxX = std::max(maxX, monitor.m_worldX + monitor.layoutWidth());
+        maxY = std::max(maxY, monitor.m_worldY + monitor.layoutHeight());
       }
     }
   }
@@ -373,8 +383,8 @@ void AdvancedLayoutWidget::addMonitorToScene(
 )
 {
   auto *item = new MonitorRectItem(
-      monitor.m_worldX * kSceneScale, monitor.m_worldY * kSceneScale, monitor.m_width * kSceneScale,
-      monitor.m_height * kSceneScale, &monitor, this, movable
+      monitor.m_worldX * kSceneScale, monitor.m_worldY * kSceneScale, monitor.layoutWidth() * kSceneScale,
+      monitor.layoutHeight() * kSceneScale, &monitor, this, movable
   );
   item->setBrush(color);
   if (!movable) {

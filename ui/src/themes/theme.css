@@ -1,0 +1,158 @@
+.font-inter {
+  font-family: "Inter", sans-serif;
+}
+.font-nunito {
+  font-family: "Nunito", sans-serif;
+}
+.font-lora {
+  font-family: "Lora", serif;
+}
+.font-playfair {
+  font-family: "Playfair Display", serif;
+}
+.font-space {
+  font-family: "Space Mono", monospace;
+}
+.font-jb {
+  font-family: "JetBrains Mono", monospace;
+}
+.font-oswald {
+  font-family: "Oswald", sans-serif;
+}
+
+.grid-dark-pro {
+  background-image: radial-gradient(circle, #334155 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+.grid-light-mod {
+  background-image: radial-gradient(circle, #cbd5e1 2px, transparent 2px);
+  background-size: 24px 24px;
+}
+.grid-cyberpunk {
+  background-image: radial-gradient(circle, #000 3px, transparent 4px);
+  background-size: 32px 32px;
+}
+.grid-brutalist {
+  background-image: radial-gradient(circle, #000 2px, transparent 2px);
+  background-size: 24px 24px;
+}
+.grid-monochrome {
+  background-image:
+    linear-gradient(rgba(238, 238, 238, 0.15) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(238, 238, 238, 0.15) 1px, transparent 1px);
+  background-size: 30px 30px;
+}
+.grid-warm {
+  background-image: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.15) 3px,
+    transparent 3px
+  );
+  background-size: 24px 24px;
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.theme-preview main::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.theme-preview main::-webkit-scrollbar-track {
+  background: transparent;
+}
+.theme-preview main::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.3);
+  border-radius: 4px;
+}
+.theme-preview main::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.5);
+}
+
+.switch-peer:checked ~ .switch-bg {
+  background-color: #3b82f6;
+}
+.switch-peer:checked ~ .switch-bg .switch-dot {
+  transform: translateX(20px);
+}
+
+#theme-cyberpunk .switch-peer:checked ~ .switch-bg {
+  background-color: #39ff14;
+}
+#theme-cyberpunk .switch-peer:checked ~ .switch-bg .switch-dot {
+  transform: translateX(20px);
+}
+
+#theme-monochrome .switch-bg {
+  border-radius: 0;
+  background-color: transparent;
+  border: 1px solid #eeeeee;
+}
+#theme-monochrome .switch-dot {
+  border-radius: 0;
+  background-color: #eeeeee;
+  border: none;
+}
+#theme-monochrome .switch-peer:checked ~ .switch-bg {
+  background-color: #eeeeee;
+}
+#theme-monochrome .switch-peer:checked ~ .switch-bg .switch-dot {
+  background-color: #111111;
+  transform: translateX(26px);
+}
+
+#theme-brutalist .switch-peer:checked ~ .switch-bg {
+  background-color: #000;
+}
+#theme-brutalist .switch-peer:checked ~ .switch-bg .switch-dot {
+  transform: translateX(100%);
+  background-color: #fff;
+  border-color: #000;
+}
+
+#theme-light-mod .switch-peer:checked ~ .switch-bg {
+  background-color: #2a57e8;
+}
+#theme-warm .switch-peer:checked ~ .switch-bg {
+  background-color: #e3f217;
+}
+
+.btn-stark {
+  background: transparent;
+  border: 1px solid #eeeeee;
+  color: #eeeeee;
+  font-family: "Oswald", sans-serif;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 0;
+  transition: all 0.2s ease;
+}
+.btn-stark:hover {
+  background: #eeeeee;
+  color: #111111;
+}
+
+.sharp-border {
+  border: 1px solid #eeeeee;
+}
+.sharp-border-b {
+  border-bottom: 1px solid #eeeeee;
+}
+.sharp-border-r {
+  border-right: 1px solid #eeeeee;
+}
+.sharp-border-t {
+  border-top: 1px solid #eeeeee;
+}

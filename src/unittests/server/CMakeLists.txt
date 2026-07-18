@@ -45,3 +45,27 @@ create_test(
   WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
 )
 
+create_test(
+  NAME EdgeGraphTests
+  DEPENDS server
+  LIBS base arch ${extra_libs}
+  SOURCE EdgeGraphTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
+)
+
+create_test(
+  NAME SwitchEngineTests
+  DEPENDS server
+  LIBS base arch ${extra_libs}
+  SOURCE SwitchEngineTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
+)
+
+create_test(
+  NAME PoseMergeTests
+  DEPENDS server
+  LIBS base arch ${extra_libs}
+  SOURCE PoseMergeTests.cpp
+  WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/server"
+)
+

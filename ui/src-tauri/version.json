@@ -1,0 +1,11 @@
+{
+  "version": "1.26.0.214",
+  "gitSha": "4b4f3dd9",
+  "versionId": "1.26.0.214+4b4f3dd9",
+  "coreIpcName": "deskflow-core",
+  "daemonIpcName": "deskflow-daemon",
+  "guiIpcName": "deskflow-gui",
+  "coreBinName": "deskflow-core",
+  "appName": "Deskflow",
+  "appId": "deskflow"
+}

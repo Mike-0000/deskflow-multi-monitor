@@ -1,5 +1,5 @@
 ---
-description: Windows build, test, migrate, and MSVC environment for Deskflow
+description: Windows build, test, package, and portable install for Deskflow
 alwaysApply: true
 ---
 
@@ -7,7 +7,21 @@ alwaysApply: true
 
 ## Required workflow after code changes
 
-After any C++/CMake change that affects the product, run **build → test → migrate** before considering the task done:
+After **any** change that affects the shipped product — C++/CMake, Tauri/React UI
+(`ui/`), migrate/package scripts, or config that the installed app reads — run
+**build → test → migrate → package → install** before considering the task done.
+Do not stop at `cargo check` / `tsc` / `tauri:dev` alone when the user needs an
+installed binary.
+
+UI-only / Tauri-only still needs migrate (defaults rebuild Tauri) so
+`C:\Program Files\Deskflow\deskflow.exe` matches the workspace. Skip C++ rebuild
+only when core/daemon artifacts are already current:
+
+```powershell
+.\migrate-windows.ps1 -BuildFirst:$false -Force   # still builds Tauri by default
+```
+
+Full product path:
 
 ```powershell
 # 1. Build (imports MSVC, vcpkg, Qt)
@@ -15,41 +29,71 @@ After any C++/CMake change that affects the product, run **build → test → mi
 
 # 2. Unit tests (reconfigure with -DSKIP_BUILD_TESTS=OFF first if tests are missing)
 $env:PATH = "$PWD\.qt\6.10.3\msvc2022_64\bin;$PWD\build\bin;$env:PATH"
-Set-Location build\src\lib\server
-..\..\..\unittests\server\SwitchDecisionTests.exe
-..\..\..\unittests\server\DisplayLayoutTests.exe
-Set-Location $PWD\..\..\..\..
+& build\src\unittests\server\SwitchDecisionTests.exe
+& build\src\unittests\server\DisplayLayoutTests.exe
+& build\src\unittests\server\EdgeGraphTests.exe
+& build\src\unittests\server\SwitchEngineTests.exe
 
-# 3. Migrate installed Deskflow (requires Administrator)
-.\migrate-windows.ps1 -Force
+# 3. Stage/install locally so Program Files has core + Qt runtime (Tauri cutover)
+#    Required before packaging: the portable zip is built from this tree.
+Start-Process powershell -Verb RunAs -Wait -ArgumentList `
+  "-NoProfile -ExecutionPolicy Bypass -Command `"cd '$PWD'; .\migrate-windows.ps1 -Force`""
+
+# 4. Package a portable zip for this machine and remotes (no VS needed on target)
+.\package-windows-portable.ps1
+
+# 5. Install from the package (elevated). Prefer this over hand-copying files.
+$pkg = Get-ChildItem .\dist\deskflow-*-win-x64-portable -Directory |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1
+Start-Process powershell -Verb RunAs -Wait -ArgumentList `
+  "-NoProfile -ExecutionPolicy Bypass -Command `"cd '$($pkg.FullName)'; .\Install-Remote.ps1`""
 ```
 
-Or combine build + migrate:
+On a **remote host** (no Visual Studio / build tools): copy the zip from `dist\`, extract, then run `Install-Remote.ps1` elevated. Also install VC++ Redistributable x64 and WebView2 once if missing.
+
+## package-windows-portable.ps1
+
+Builds `dist/deskflow-<version>-win-x64-portable.zip` from the current
+`C:\Program Files\Deskflow` tree (after migrate). Includes Tauri GUI, core,
+daemon, Qt DLLs/plugins, `qt.conf`, `Install-Remote.ps1`, and `README.md`.
 
 ```powershell
-.\migrate-windows.ps1 -BuildFirst -Force
+.\package-windows-portable.ps1
+.\package-windows-portable.ps1 -SourceDir 'C:\Program Files\Deskflow'
+.\package-windows-portable.ps1 -SkipZip   # folder only under dist\
 ```
 
-Preview migration without changes: `.\migrate-windows.ps1 -WhatIf`
+## Install-Remote.ps1 (inside the portable folder)
+
+Copies `Deskflow\` into `C:\Program Files\Deskflow`, registers/updates the
+Deskflow Windows service, and starts it. **Admin required.** No VS/CMake/Qt SDK.
+
+```powershell
+# From the extracted portable folder:
+.\Install-Remote.ps1
+.\Install-Remote.ps1 -NoStart
+.\Install-Remote.ps1 -NoService   # files only; launch deskflow.exe manually
+```
 
 ## migrate-windows.ps1
 
-Copies `build/bin` into `C:\Program Files\Deskflow`, backs up to `.migration-backup/`, stops/restarts the Deskflow service. Settings in `%APPDATA%\Deskflow` are preserved.
+Still used on the **build machine** to assemble a complete install (Tauri GUI +
+`deskflow-core` + Qt via windeployqt) before packaging. Settings in
+`%APPDATA%\Deskflow` are preserved.
 
-| Flag | When |
-|------|------|
-| `-BuildFirst` | Run `build-windows.ps1` before copying |
-| `-Force` | Required on **client** machines (protocol 1.9; server should be upgraded first) |
-| `-WhatIf` | Preflight only; no admin needed |
-| `-NoStart` | Install but do not restart the service |
-| `-SkipBackup` | Skip backup (avoid unless urgent) |
+**Defaults:** `-Force -UseTauriUi -BuildTauriUi -BuildFirst`.
 
-**Admin required** for real migration. If the agent shell is not elevated, launch via UAC:
+| Flag | Default | When |
+|------|---------|------|
+| `-BuildFirst` | on | Run `build-windows.ps1` before copying (`-BuildFirst:$false` to skip) |
+| `-UseTauriUi` | on | Cut over GUI to Tauri (`-UseTauriUi:$false` for legacy Qt) |
+| `-BuildTauriUi` | on | Build Tauri UI first (`-BuildTauriUi:$false` to skip) |
+| `-Force` | on | Skip client/server upgrade safety check |
+| `-WhatIf` | off | Preflight only; no admin needed |
+| `-NoStart` | off | Install but do not restart the service |
 
-```powershell
-Start-Process powershell -Verb RunAs -Wait -ArgumentList `
-  "-NoProfile -ExecutionPolicy Bypass -Command `"cd '$PWD'; .\migrate-windows.ps1 -Force`""
-```
+Tauri cutover **must** deploy Qt for `deskflow-core` (it still links Qt). Do not
+strip `Qt6*.dll` / `plugins` from the install.
 
 ## Manual incremental build (agents)
 
@@ -62,17 +106,27 @@ cmd /c "`"$vcvars`" >nul 2>&1 && set" | Out-File $envFile -Encoding ascii
 Get-Content $envFile | ForEach-Object { if ($_ -match '^([^=]+)=(.*)$') { Set-Item "env:$($matches[1])" $matches[2] } }
 Remove-Item $envFile -Force
 
-cmake --build build --target deskflow deskflow-core server SwitchDecisionTests DisplayLayoutTests -j 8
+cmake --build build --target deskflow deskflow-core server SwitchDecisionTests DisplayLayoutTests EdgeGraphTests SwitchEngineTests -j 8
 ```
 
-Then run `.\migrate-windows.ps1 -Force` (elevated).
+Then finish with migrate → package → `Install-Remote.ps1` as above. For UI-only
+changes when C++ binaries are already current:
+
+```powershell
+cd ui; .\scripts\build-windows.ps1
+cd ..
+.\migrate-windows.ps1 -BuildFirst:$false -BuildTauriUi:$false -Force
+.\package-windows-portable.ps1
+# then elevated Install-Remote.ps1 from the new dist folder
+```
 
 ## Key paths
 
 | Artifact | Path |
 |----------|------|
-| GUI (built) | `build/bin/deskflow.exe` |
-| GUI (installed) | `C:\Program Files\Deskflow\deskflow.exe` |
+| GUI / core (built) | `build/bin/deskflow-ui.exe`, `deskflow-core.exe` |
+| Installed | `C:\Program Files\Deskflow\` |
+| Portable zip | `dist/deskflow-*-win-x64-portable.zip` |
 | Migration backups | `.migration-backup/<timestamp>/` |
 | Qt | `.qt/6.10.3/msvc2022_64` |
 
@@ -81,4 +135,5 @@ Then run `.\migrate-windows.ps1 -Force` (elevated).
 - PowerShell: use `;` not `&&`.
 - New `.cpp` files need CMake reconfigure (GLOB mismatch).
 - `Server.h`: qualify `deskflow::server::` types; no `using namespace` in headers.
-- Client migration aborts without `-Force` when server may still be on an older build.
+- Packaging without a prior migrate that includes Qt will produce a broken core (`Qt6Widgets.dll` missing).
+- Remote hosts need VC++ Redistributable x64 and WebView2; not Visual Studio.
