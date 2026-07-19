@@ -265,18 +265,18 @@ export default function App() {
   return (
     <div id={`theme-${themeId}`} className={tc.root}>
       <header className={tc.header}>
-        <div className="flex items-center gap-4">
+        <div className="flex min-w-0 flex-1 items-center gap-3 sm:gap-4">
           <div className={tc.logoWrap}>
             <Monitor className={`size-5 ${tc.logoIcon}`} strokeWidth={2} />
           </div>
-          <div>
+          <div className="min-w-0">
             <h1 className={tc.title}>{appName}</h1>
             <p className={tc.subtitle}>
               Share one mouse and keyboard across your computers
             </p>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex max-w-full flex-wrap items-center gap-2 sm:gap-3">
           <div className={tc.badgeConnected}>
             <span className={tc.badgeDotConnected} />
             {badgeText(connectionLabel(connState), upper)}
@@ -305,12 +305,12 @@ export default function App() {
               onClick={() => setMode("server")}
               className={isServer ? tc.modeServerActive : tc.modeServerIdle}
             >
-              <div className="relative flex items-start justify-between">
-                <div>
+              <div className="relative flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
                   <h3 className={isServer ? tc.modeTitleActive : tc.modeTitleIdle}>
                     Server
                     <User
-                      className={`size-4 ${isServer ? tc.modeIconActive : tc.modeIconIdle}`}
+                      className={`size-4 shrink-0 ${isServer ? tc.modeIconActive : tc.modeIconIdle}`}
                     />
                   </h3>
                   <p className={isServer ? tc.modeDescActive : tc.modeDescIdle}>
@@ -325,12 +325,12 @@ export default function App() {
               onClick={() => setMode("client")}
               className={isClient ? tc.modeClientActive : tc.modeClientIdle}
             >
-              <div className="flex items-start justify-between">
-                <div>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
                   <h3 className={isClient ? tc.modeTitleActive : tc.modeTitleIdle}>
                     Client
                     <Monitor
-                      className={`size-4 ${isClient ? tc.modeIconActive : tc.modeIconIdle}`}
+                      className={`size-4 shrink-0 ${isClient ? tc.modeIconActive : tc.modeIconIdle}`}
                     />
                   </h3>
                   <p className={isClient ? tc.modeDescActive : tc.modeDescIdle}>
@@ -343,10 +343,10 @@ export default function App() {
           </div>
 
           {isClient && settings && (
-            <div className="px-6 py-5">
+            <div className="px-4 py-5 sm:px-6">
               <label className={tc.label}>Server address</label>
               <input
-                className={`${tc.input} !w-full !pl-3`}
+                className={`${tc.input} !max-w-none !w-full !pl-3`}
                 value={settings.remoteHost}
                 placeholder="e.g. 192.168.1.10 or hostname"
                 onChange={(e) =>
@@ -405,15 +405,21 @@ export default function App() {
             </div>
           )}
 
+          {(error || status?.lastError) && (
+            <div role="alert" className={tc.errorBox}>
+              {error || status?.lastError}
+            </div>
+          )}
+
           <div className={tc.actionsRow}>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
               <button
                 type="button"
                 onClick={start}
                 disabled={busy || running}
                 className={tc.btnStart}
               >
-                <Play className="size-4 fill-current" />
+                <Play className="size-4 shrink-0 fill-current" />
                 Start
               </button>
               <button
@@ -422,7 +428,7 @@ export default function App() {
                 disabled={busy || !running}
                 className={tc.btnStop}
               >
-                <Square className="size-3.5 fill-current" />
+                <Square className="size-3.5 shrink-0 fill-current" />
                 Stop
               </button>
               <button
@@ -431,11 +437,11 @@ export default function App() {
                 disabled={busy}
                 className={tc.btnGhost}
               >
-                <RotateCcw className="size-4" />
+                <RotateCcw className="size-4 shrink-0" />
                 Restart
               </button>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 sm:gap-3">
               {isServer && (
                 <button
                   type="button"
@@ -443,9 +449,9 @@ export default function App() {
                   className={tc.btnSecondary}
                 >
                   {showLayout ? (
-                    <EyeOff className="size-4" />
+                    <EyeOff className="size-4 shrink-0" />
                   ) : (
-                    <Eye className="size-4" />
+                    <Eye className="size-4 shrink-0" />
                   )}
                   {showLayout ? "Hide layout" : "Show layout"}
                 </button>
@@ -455,7 +461,7 @@ export default function App() {
                 onClick={() => setShowThemes(true)}
                 className={tc.btnGhost}
               >
-                <Palette className="size-4" />
+                <Palette className="size-4 shrink-0" />
                 Theme
               </button>
               <button
@@ -463,24 +469,18 @@ export default function App() {
                 onClick={() => setShowSettings(true)}
                 className={tc.btnGhost}
               >
-                <Settings2 className="size-4" />
+                <Settings2 className="size-4 shrink-0" />
                 Preferences
               </button>
             </div>
           </div>
-
-          {(error || status?.lastError) && (
-            <div role="alert" className={tc.errorBox}>
-              {error || status?.lastError}
-            </div>
-          )}
         </section>
 
         {isServer && showLayout && serverConfig && (
           <section className={tc.layoutCard}>
             <div className={tc.layoutHeader}>
-              <div className="flex items-center justify-between px-6 py-4">
-                <div>
+              <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">
+                <div className="min-w-0">
                   <h2 className={tc.layoutTitle}>Screen Layout</h2>
                   <p className={tc.layoutSubtitle}>
                     Arrange computers so the cursor can move between them
@@ -508,7 +508,7 @@ export default function App() {
       </main>
 
       <footer className={tc.footer}>
-        <div className="flex flex-wrap items-center gap-6">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2 sm:gap-x-6">
           <button
             type="button"
             className={tc.footerLink}
@@ -528,7 +528,7 @@ export default function App() {
             className={`${tc.footerLink} flex items-center gap-1`}
             onClick={() => setShowLog(true)}
           >
-            <Terminal className="size-3" />
+            <Terminal className="size-3 shrink-0" />
             Debug log
             {logs.length > 0 && (
               <span className="opacity-70">({logs.length})</span>
@@ -539,7 +539,7 @@ export default function App() {
             className={`${tc.footerLink} flex items-center gap-1`}
             onClick={() => openUrl("https://github.com/deskflow/deskflow")}
           >
-            <CircleHelp className="size-3" />
+            <CircleHelp className="size-3 shrink-0" />
             Help
           </button>
         </div>

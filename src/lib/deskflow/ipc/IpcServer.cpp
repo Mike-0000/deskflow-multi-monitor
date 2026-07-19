@@ -90,6 +90,7 @@ void IpcServer::handleDisconnected()
   const auto clientSocket = qobject_cast<QLocalSocket *>(sender());
   LOG_DEBUG("%s ipc server client disconnected", m_typeName.constData());
   m_clients.remove(clientSocket);
+  m_mismatchedClients.remove(clientSocket);
   clientSocket->deleteLater();
 }
 
@@ -98,6 +99,7 @@ void IpcServer::handleErrorOccurred()
   const auto clientSocket = qobject_cast<QLocalSocket *>(sender());
   LOG_ERR("%s ipc server client error: %s", m_typeName.constData(), clientSocket->errorString().toUtf8().constData());
   m_clients.remove(clientSocket);
+  m_mismatchedClients.remove(clientSocket);
   clientSocket->deleteLater();
 }
 
@@ -129,11 +131,14 @@ void IpcServer::processMessage(QLocalSocket *clientSocket, const QString &messag
           "%s ipc client version mismatch (client: %s, server: %s)", m_typeName.constData(),
           clientVersion.toUtf8().constData(), versionId.toUtf8().constData()
       );
+      m_mismatchedClients.insert(clientSocket);
       writeToClientSocket(clientSocket, QStringLiteral("versionMismatch=%1").arg(versionId));
       clientSocket->flush();
+      // Do not replay pending state; client must stop this process and reinstall matching binaries.
       return;
     }
 
+    m_mismatchedClients.remove(clientSocket);
     LOG_DEBUG("%s ipc server sending hello back", m_typeName.constData());
     writeToClientSocket(clientSocket, QStringLiteral("hello=%1").arg(versionId));
 
@@ -147,6 +152,17 @@ void IpcServer::processMessage(QLocalSocket *clientSocket, const QString &messag
   } else if (command == QStringLiteral("noop")) {
     LOG_DEBUG("%s ipc server got noop message", m_typeName.constData());
     writeToClientSocket(clientSocket, QStringLiteral("ok"));
+  } else if (m_mismatchedClients.contains(clientSocket)) {
+    // After version skew, only accept stop so the GUI can tear down the stale peer.
+    if (command == QStringLiteral("stop")) {
+      processCommand(clientSocket, command, parts);
+    } else {
+      LOG_WARN(
+          "%s ipc rejecting '%s' from version-mismatched client (reinstall matching binaries)",
+          m_typeName.constData(), command.toUtf8().constData()
+      );
+      writeToClientSocket(clientSocket, QStringLiteral("error=version mismatch"));
+    }
   } else {
     processCommand(clientSocket, command, parts);
   }

@@ -14,8 +14,6 @@ pub enum IpcError {
     Connect(String),
     #[error("handshake failed: {0}")]
     Handshake(String),
-    #[error("version mismatch: server={0}")]
-    VersionMismatch(String),
     #[error("io error: {0}")]
     Io(#[from] io::Error),
     #[error("not connected")]
@@ -42,11 +40,18 @@ pub enum IpcEvent {
 pub struct IpcClient {
     write: Option<tokio::io::WriteHalf<Stream>>,
     event_tx: mpsc::UnboundedSender<IpcEvent>,
+    /// Set when the peer rejected our hello due to version skew. Socket stays
+    /// open briefly so we can send `stop` and tear down the stale process.
+    mismatched_server_version: Option<String>,
 }
 
 impl IpcClient {
     pub fn event_channel() -> (mpsc::UnboundedSender<IpcEvent>, mpsc::UnboundedReceiver<IpcEvent>) {
         mpsc::unbounded_channel()
+    }
+
+    pub fn mismatched_server_version(&self) -> Option<&str> {
+        self.mismatched_server_version.as_deref()
     }
 
     pub async fn connect(socket_name: &str, event_tx: mpsc::UnboundedSender<IpcEvent>) -> Result<Self, IpcError> {
@@ -88,15 +93,17 @@ impl IpcClient {
         let line = line.trim_end_matches(['\r', '\n']).to_string();
         let (cmd, args) = split_message(&line);
 
+        let mut mismatched_server_version = None;
         match cmd.as_str() {
             "error" => {
                 return Err(IpcError::Handshake(args));
             }
             "versionMismatch" => {
+                mismatched_server_version = Some(args.clone());
                 let _ = event_tx.send(IpcEvent::VersionMismatch {
                     server_version: args.clone(),
                 });
-                // Qt still marks Connected on mismatch; we do the same so stop can be sent.
+                // Keep the socket open so the caller can send `stop` to the stale peer.
             }
             "hello" => {
                 if args.is_empty() {
@@ -108,7 +115,9 @@ impl IpcClient {
             }
         }
 
-        let _ = event_tx.send(IpcEvent::Connected);
+        if mismatched_server_version.is_none() {
+            let _ = event_tx.send(IpcEvent::Connected);
+        }
 
         let reader_tx = event_tx.clone();
         tokio::spawn(async move {
@@ -148,6 +157,7 @@ impl IpcClient {
         Ok(Self {
             write: Some(write_half),
             event_tx,
+            mismatched_server_version,
         })
     }
 

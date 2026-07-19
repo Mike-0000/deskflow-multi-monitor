@@ -158,6 +158,83 @@ function Get-TauriVersionId([string] $RepoRoot) {
   return 'tauri-ui'
 }
 
+function Get-VersionNumberPart([string] $VersionId) {
+  if (-not $VersionId) { return $null }
+  # "1.26.0.215+ba35f21f" or "v1.26.0.215" -> "1.26.0.215"
+  $v = $VersionId.Trim()
+  if ($v.StartsWith('v')) { $v = $v.Substring(1) }
+  $plus = $v.IndexOf('+')
+  if ($plus -ge 0) { $v = $v.Substring(0, $plus) }
+  $space = $v.IndexOf(' ')
+  if ($space -ge 0) { $v = $v.Substring(0, $space) }
+  return $v
+}
+
+function Get-CoreVersionIdFromExe([string] $ExePath) {
+  if (-not (Test-Path $ExePath)) { return $null }
+  try {
+    $output = & $ExePath --version 2>&1 | Out-String
+    # deskflow-core.exe v1.26.0.214 (4b4f3dd9), protocol v1.9
+    if ($output -match 'v(\d+\.\d+\.\d+(?:\.\d+)?)\s+\(([0-9a-fA-F]+)\)') {
+      return "$($Matches[1])+$($Matches[2])"
+    }
+    if ($output -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
+      return $Matches[1]
+    }
+  } catch {}
+  return Get-DeskflowVersion $ExePath
+}
+
+function Assert-BinaryVersionAlignment {
+  param(
+    [Parameter(Mandatory)][string] $GuiVersionId,
+    [Parameter(Mandatory)][string] $CoreExe,
+    [Parameter(Mandatory)][string] $DaemonExe,
+    [string] $Context = 'install'
+  )
+
+  $guiNum = Get-VersionNumberPart $GuiVersionId
+  if (-not $guiNum) {
+    throw "Cannot parse GUI versionId '$GuiVersionId' for $Context alignment check."
+  }
+
+  $coreId = Get-CoreVersionIdFromExe $CoreExe
+  $daemonId = Get-DeskflowVersion $DaemonExe
+  $coreNum = Get-VersionNumberPart $coreId
+  $daemonNum = Get-VersionNumberPart $daemonId
+
+  Write-Host "  Version alignment ($Context):" -ForegroundColor Cyan
+  Write-Host "    GUI:    $GuiVersionId"
+  Write-Host "    core:   $(if ($coreId) { $coreId } else { '(unknown)' })"
+  Write-Host "    daemon: $(if ($daemonId) { $daemonId } else { '(unknown)' })"
+
+  $mismatches = @()
+  if (-not $coreNum) {
+    $mismatches += "could not read version from $CoreExe"
+  } elseif ($coreNum -ne $guiNum) {
+    $mismatches += "core $coreNum != GUI $guiNum"
+  }
+  if (-not $daemonNum) {
+    $mismatches += "could not read version from $DaemonExe"
+  } elseif ($daemonNum -ne $guiNum) {
+    $mismatches += "daemon $daemonNum != GUI $guiNum"
+  }
+
+  if ($mismatches.Count -gt 0) {
+    throw @"
+Version skew detected during $Context — this causes IPC mismatch warnings, skipped hello/state replay, and slow/flaky Start.
+
+  $($mismatches -join "`n  ")
+
+Rebuild C++ and Tauri together (do not use UI-only migrate), then re-run:
+  .\migrate-windows.ps1 -Force
+  # or: .\build-windows.ps1 ; then migrate with -BuildFirst (default)
+"@
+  }
+
+  Write-Host "  GUI/core/daemon versions match ($guiNum)." -ForegroundColor Green
+}
+
 function Find-SettingsFile {
   $candidates = @(
     (Join-Path $env:APPDATA 'Deskflow\Deskflow.conf'),
@@ -576,11 +653,20 @@ function Prepare-StagingTauri([string] $StagingDir) {
   # Also keep the explicit name for clarity / scripts.
   Copy-Item $tauriSrc (Join-Path $StagingDir 'deskflow-ui.exe') -Force
 
+  $stagedCore = Join-Path $StagingDir 'deskflow-core.exe'
+  $stagedDaemon = Join-Path $StagingDir 'deskflow-daemon.exe'
+  Assert-BinaryVersionAlignment -GuiVersionId $script:NewVersion -CoreExe $stagedCore -DaemonExe $stagedDaemon -Context 'migrate staging'
+
+  $coreVersionId = Get-CoreVersionIdFromExe $stagedCore
+  $daemonVersionId = Get-DeskflowVersion $stagedDaemon
+
   # Tiny marker so we can tell installs apart later.
   $marker = [ordered]@{
-    gui        = 'tauri'
-    versionId  = $script:NewVersion
-    migratedAt = (Get-Date).ToString('o')
+    gui           = 'tauri'
+    versionId     = $script:NewVersion
+    coreVersionId = $coreVersionId
+    daemonVersion = $daemonVersionId
+    migratedAt    = (Get-Date).ToString('o')
   }
   $marker | ConvertTo-Json | Set-Content (Join-Path $StagingDir 'deskflow-ui.json') -Encoding UTF8
 
@@ -819,6 +905,12 @@ if ($script:UseTauriUi) {
   if (-not (Test-Path (Join-Path $script:SourceDir 'deskflow-daemon.exe'))) {
     throw "deskflow-daemon.exe missing in $script:SourceDir (run with -BuildFirst, the default)."
   }
+  # Catch UI-only rebuilds before staging: GUI version.json must match build\bin core/daemon.
+  Assert-BinaryVersionAlignment `
+    -GuiVersionId $script:NewVersion `
+    -CoreExe (Join-Path $script:SourceDir 'deskflow-core.exe') `
+    -DaemonExe (Join-Path $script:SourceDir 'deskflow-daemon.exe') `
+    -Context 'build artifacts'
   if (-not (Test-WebView2Installed)) {
     Write-Warn "WebView2 Runtime was not detected. The Tauri GUI needs it: https://developer.microsoft.com/microsoft-edge/webview2/"
     if (-not $Force) {

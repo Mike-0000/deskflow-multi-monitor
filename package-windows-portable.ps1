@@ -50,6 +50,50 @@ foreach ($name in $required) {
   }
 }
 
+function Get-VersionNumberPart([string] $VersionId) {
+  if (-not $VersionId) { return $null }
+  $v = $VersionId.Trim()
+  if ($v.StartsWith('v')) { $v = $v.Substring(1) }
+  $plus = $v.IndexOf('+')
+  if ($plus -ge 0) { $v = $v.Substring(0, $plus) }
+  $space = $v.IndexOf(' ')
+  if ($space -ge 0) { $v = $v.Substring(0, $space) }
+  return $v
+}
+
+function Get-CoreVersionIdFromExe([string] $ExePath) {
+  if (-not (Test-Path $ExePath)) { return $null }
+  try {
+    $output = & $ExePath --version 2>&1 | Out-String
+    if ($output -match 'v(\d+\.\d+\.\d+(?:\.\d+)?)\s+\(([0-9a-fA-F]+)\)') {
+      return "$($Matches[1])+$($Matches[2])"
+    }
+    if ($output -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
+      return $Matches[1]
+    }
+  } catch {}
+  try {
+    $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ExePath)
+    if ($vi.ProductVersion) { return $vi.ProductVersion }
+  } catch {}
+  return $null
+}
+
+function Get-DaemonVersionFromExe([string] $ExePath) {
+  if (-not (Test-Path $ExePath)) { return $null }
+  try {
+    $output = & $ExePath --version 2>&1 | Out-String
+    if ($output -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
+      return $Matches[1]
+    }
+  } catch {}
+  try {
+    $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ExePath)
+    if ($vi.ProductVersion) { return $vi.ProductVersion }
+  } catch {}
+  return $null
+}
+
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $versionHint = '1.26.0'
 $marker = Join-Path $SourceDir 'deskflow-ui.json'
@@ -59,6 +103,24 @@ if (Test-Path $marker) {
     if ($json.versionId) { $versionHint = [string]$json.versionId }
   } catch {}
 }
+
+$guiNum = Get-VersionNumberPart $versionHint
+$coreId = Get-CoreVersionIdFromExe (Join-Path $SourceDir 'deskflow-core.exe')
+$daemonId = Get-DaemonVersionFromExe (Join-Path $SourceDir 'deskflow-daemon.exe')
+$coreNum = Get-VersionNumberPart $coreId
+$daemonNum = Get-VersionNumberPart $daemonId
+Write-Host "Version check before package:" -ForegroundColor Cyan
+Write-Host "  GUI:    $versionHint"
+Write-Host "  core:   $(if ($coreId) { $coreId } else { '(unknown)' })"
+Write-Host "  daemon: $(if ($daemonId) { $daemonId } else { '(unknown)' })"
+if (-not $guiNum -or -not $coreNum -or -not $daemonNum -or $coreNum -ne $guiNum -or $daemonNum -ne $guiNum) {
+  throw @"
+Refusing to package version-skewed Deskflow tree under $SourceDir.
+GUI/core/daemon must share the same version number (got GUI=$guiNum core=$coreNum daemon=$daemonNum).
+Re-run .\migrate-windows.ps1 with a full C++ + Tauri build first.
+"@
+}
+Write-Host "  Aligned at $guiNum - packaging." -ForegroundColor Green
 
 $pkgName = "deskflow-$versionHint-win-x64-portable"
 $stageRoot = Join-Path $OutDir $pkgName
@@ -465,12 +527,41 @@ if (-not (Test-Path $InstallPath)) {
   New-Item -ItemType Directory -Path $InstallPath -Force | Out-Null
 }
 
-$svc = Get-Service -Name 'Deskflow' -ErrorAction SilentlyContinue
-if ($svc -and $svc.Status -eq 'Running') {
-  Write-Host "Stopping Deskflow service..."
-  Stop-Service -Name 'Deskflow' -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Seconds 1
+function Stop-DeskflowBinariesForUpdate {
+  # Must stop GUI/core BEFORE robocopy or Windows keeps the locked deskflow.exe
+  # and Install-Remote silently leaves the previous UI in place.
+  $svcLocal = Get-Service -Name 'Deskflow' -ErrorAction SilentlyContinue
+  if ($svcLocal -and $svcLocal.Status -ne 'Stopped') {
+    Write-Host "Stopping Deskflow service..."
+    Stop-Service -Name 'Deskflow' -Force -ErrorAction SilentlyContinue
+  }
+
+  $names = @('deskflow', 'deskflow-ui', 'deskflow-core', 'deskflow-daemon')
+  for ($attempt = 1; $attempt -le 5; $attempt++) {
+    $procs = @(Get-Process -Name $names -ErrorAction SilentlyContinue)
+    if ($procs.Count -eq 0) { break }
+    Write-Host ("Stopping Deskflow processes (attempt {0}): {1}" -f $attempt, (
+      ($procs | ForEach-Object { $_.ProcessName }) -join ', '
+    ))
+    foreach ($p in $procs) {
+      try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+    }
+    Start-Sleep -Milliseconds 600
+  }
+
+  $left = @(Get-Process -Name $names -ErrorAction SilentlyContinue)
+  if ($left.Count -gt 0) {
+    throw ("Cannot update while still running: {0}. Close Deskflow and retry." -f (
+      ($left | ForEach-Object { "{0}(pid={1})" -f $_.ProcessName, $_.Id }) -join ', '
+    ))
+  }
 }
+
+Stop-DeskflowBinariesForUpdate
+
+$payloadGui = Join-Path $payload 'deskflow.exe'
+$payloadMarker = Join-Path $payload 'deskflow-ui.json'
+$payloadHash = (Get-FileHash -Path $payloadGui -Algorithm SHA256).Hash
 
 robocopy $payload $InstallPath /MIR /R:2 /W:2 /NFL /NDL /NJH /NJS /NC /NS | Out-Null
 if ($LASTEXITCODE -ge 8) {
@@ -480,9 +571,74 @@ if ($LASTEXITCODE -ge 8) {
 $daemon = Join-Path $InstallPath 'deskflow-daemon.exe'
 $gui = Join-Path $InstallPath 'deskflow.exe'
 $coreExe = Join-Path $InstallPath 'deskflow-core.exe'
+
+# Prove the GUI binary was actually replaced (not skipped due to a file lock).
+if (-not (Test-Path $gui)) {
+  throw "Install incomplete: deskflow.exe missing under $InstallPath"
+}
+$installedHash = (Get-FileHash -Path $gui -Algorithm SHA256).Hash
+if ($installedHash -ne $payloadHash) {
+  throw ("Install incomplete: deskflow.exe was not updated (likely still locked).`n" +
+    "  Payload:    $payloadHash`n" +
+    "  Installed:  $installedHash`n" +
+    "Close Deskflow completely and re-run Install-Remote.ps1.")
+}
+if (Test-Path $payloadMarker) {
+  Copy-Item $payloadMarker (Join-Path $InstallPath 'deskflow-ui.json') -Force
+  try {
+    $marker = Get-Content (Join-Path $InstallPath 'deskflow-ui.json') -Raw | ConvertFrom-Json
+    if ($marker.versionId) {
+      Write-Host "Installed GUI version: $($marker.versionId)" -ForegroundColor Green
+    }
+  } catch {}
+}
+Write-Host "GUI binary verified (SHA256 match)." -ForegroundColor Green
+
+# Confirm core/daemon were replaced with the same build number as the GUI marker.
+function Get-InstallVersionNumberPart([string] $VersionId) {
+  if (-not $VersionId) { return $null }
+  $v = $VersionId.Trim()
+  if ($v.StartsWith('v')) { $v = $v.Substring(1) }
+  $plus = $v.IndexOf('+')
+  if ($plus -ge 0) { $v = $v.Substring(0, $plus) }
+  $space = $v.IndexOf(' ')
+  if ($space -ge 0) { $v = $v.Substring(0, $space) }
+  return $v
+}
+$expectedGui = $null
+if (Test-Path (Join-Path $InstallPath 'deskflow-ui.json')) {
+  try {
+    $expectedGui = (Get-Content (Join-Path $InstallPath 'deskflow-ui.json') -Raw | ConvertFrom-Json).versionId
+  } catch {}
+}
+$coreOut = & $coreExe --version 2>&1 | Out-String
+$daemonOut = & $daemon --version 2>&1 | Out-String
+$coreVer = $null
+$daemonVer = $null
+if ($coreOut -match 'v(\d+\.\d+\.\d+(?:\.\d+)?)\s+\(([0-9a-fA-F]+)\)') {
+  $coreVer = "$($Matches[1])+$($Matches[2])"
+} elseif ($coreOut -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
+  $coreVer = $Matches[1]
+}
+if ($daemonOut -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
+  $daemonVer = $Matches[1]
+}
+$guiNum = Get-InstallVersionNumberPart $expectedGui
+$coreNum = Get-InstallVersionNumberPart $coreVer
+$daemonNum = Get-InstallVersionNumberPart $daemonVer
+Write-Host "Installed versions: GUI=$expectedGui core=$coreVer daemon=$daemonVer"
+if ($guiNum -and $coreNum -and $daemonNum -and ($coreNum -ne $guiNum -or $daemonNum -ne $guiNum)) {
+  throw ("Install version skew: GUI=$guiNum core=$coreNum daemon=$daemonNum.`n" +
+    "Close all Deskflow processes and re-run Install-Remote.ps1 from a fresh portable package.")
+}
+if ($guiNum -and $coreNum -and $daemonNum) {
+  Write-Host "GUI/core/daemon versions match ($guiNum)." -ForegroundColor Green
+}
+
 $user = Get-InteractiveUserName
 $mode = Resolve-DeskflowInstallMode -UserName $user -ForceService:$UseService -ForceDesktop:$Desktop
 $useServiceMode = ($mode -eq 'Service')
+$svc = Get-Service -Name 'Deskflow' -ErrorAction SilentlyContinue
 
 # Always open inbound TCP 24800. Server installs that only listen without this
 # rule leave remote clients stuck on "failed to connect: Timed out" / SynSent.

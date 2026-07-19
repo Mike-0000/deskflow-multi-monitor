@@ -16,8 +16,8 @@
         "title": "Deskflow",
         "width": 920,
         "height": 780,
-        "minWidth": 680,
-        "minHeight": 560
+        "minWidth": 420,
+        "minHeight": 480
       }
     ],
     "security": {

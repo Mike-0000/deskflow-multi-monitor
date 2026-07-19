@@ -375,7 +375,15 @@ impl CoreProcess {
         }
 
         sleep(Duration::from_secs(1)).await;
-        let _ = Self::connect_core_ipc(this.clone()).await;
+        // Version skew must fail closed. Other IPC connect races (core still
+        // starting under the watchdog) are non-fatal — keep tailing logs.
+        if let Err(e) = Self::connect_core_ipc(this.clone()).await {
+            if e.contains("version mismatch") {
+                return Err(e);
+            }
+            let guard = this.lock().await;
+            guard.emit_log(&format!("core ipc connect deferred: {e}"));
+        }
 
         // Tail daemon log
         let log_path = {
@@ -424,6 +432,40 @@ impl CoreProcess {
         let client = IpcClient::connect(&socket, event_tx)
             .await
             .map_err(|e| e.to_string())?;
+
+        if let Some(server) = client.mismatched_server_version().map(str::to_string) {
+            // Stale core skipped hello/pending replay — UI would look "stuck". Stop it and fail closed.
+            let mut stop_client = client;
+            let _ = stop_client.send_stop().await;
+            stop_client.disconnect();
+
+            let process_mode = {
+                let guard = this.lock().await;
+                guard.settings.process_mode
+            };
+            if process_mode == ProcessMode::Service {
+                if let Ok(mut daemon) = DaemonClient::connect().await {
+                    let _ = daemon.send_stop().await;
+                }
+            }
+
+            let msg = format!(
+                "version mismatch with core (gui={}, core={}). Reinstall Deskflow so GUI, daemon, and core match.",
+                version::info().version_id,
+                server
+            );
+            let mut guard = this.lock().await;
+            if let Some(mut child) = guard.child.take() {
+                let _ = child.kill().await;
+            }
+            guard.ipc = None;
+            guard.status.process_state = ProcessState::Stopped;
+            guard.status.connection_state = ConnectionState::Disconnected;
+            guard.status.last_error = Some(msg.clone());
+            guard.emit_log(&msg);
+            guard.emit_status();
+            return Err(msg);
+        }
 
         {
             let mut guard = this.lock().await;
@@ -487,8 +529,11 @@ impl CoreProcess {
                         guard.emit_status();
                     }
                     IpcEvent::VersionMismatch { server_version } => {
-                        guard.status.last_error =
-                            Some(format!("version mismatch with core: {server_version}"));
+                        // Handshake normally fails closed before this; keep as a safety net.
+                        guard.status.last_error = Some(format!(
+                            "version mismatch with core: {server_version}. Reinstall so GUI/daemon/core match."
+                        ));
+                        guard.status.connection_state = ConnectionState::Disconnected;
                         guard.emit_status();
                     }
                     IpcEvent::Connected => {}

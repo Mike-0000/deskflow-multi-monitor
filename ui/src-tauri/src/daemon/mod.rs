@@ -20,7 +20,17 @@ impl DaemonClient {
     pub async fn connect() -> Result<Self, DaemonError> {
         let (tx, rx) = IpcClient::event_channel();
         let name = version::info().daemon_ipc_name.clone();
-        let ipc = IpcClient::connect(&name, tx).await?;
+        let mut ipc = IpcClient::connect(&name, tx).await?;
+        if let Some(server) = ipc.mismatched_server_version().map(str::to_string) {
+            // Stale daemon cannot be "fixed" by stop — binaries must be reinstalled together.
+            let _ = ipc.send_stop().await;
+            ipc.disconnect();
+            return Err(DaemonError::Other(format!(
+                "daemon version mismatch (gui={}, daemon={}). Reinstall Deskflow so GUI, daemon, and core match.",
+                version::info().version_id,
+                server
+            )));
+        }
         Ok(Self {
             ipc,
             _events: rx,

@@ -51,6 +51,8 @@ private:
 
   QLocalServer *m_server;
   QSet<QLocalSocket *> m_clients;
+  /// Clients that failed the version hello; only `stop` is accepted until disconnect.
+  QSet<QLocalSocket *> m_mismatchedClients;
   QString m_serverName;
   QStringList m_pendingMessages;
   QByteArray m_typeName;
