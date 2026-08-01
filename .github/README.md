@@ -1,3 +1,10 @@
+Deskflow Multi Monitor introduces a new front-end, and a reworked set up for unsymmetrical monitor layouts as seen in the below image.
+
+<img width="2547" height="2783" alt="image" src="https://github.com/user-attachments/assets/0cb80060-9f19-4c2b-9ef4-f2f1bd86b717" />
+
+
+
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/deskflow/deskflow-artwork/blob/main/logo/deskflow-logo-dark-200px.png?raw=true">
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/deskflow/deskflow-artwork/blob/main/logo/deskflow-logo-light-200px.png?raw=true">
