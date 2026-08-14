@@ -24,6 +24,12 @@ public:
 
   static CoreIpcServer &instance();
 
+Q_SIGNALS:
+  void pauseSwitchingRequested(bool paused);
+  void toggleSwitchingRequested();
+  /// Filled synchronously (DirectConnection). false if not a server / unknown.
+  void pauseStatusRequested(bool *outPaused);
+
 private:
   void processCommand(QLocalSocket *clientSocket, const QString &command, const QStringList &parts) override;
 };

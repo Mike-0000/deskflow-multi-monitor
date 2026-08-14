@@ -153,6 +153,12 @@ enum class EventTypes : uint32_t
   ServerAppReloadConfig,
   ServerAppForceReconnect,
   ServerAppResetServer,
+  /// Pause screen switching while keeping client connections alive.
+  ServerAppPauseSwitching,
+  /// Resume screen switching after ServerAppPauseSwitching.
+  ServerAppResumeSwitching,
+  /// Flip screen-switching pause state (connections kept alive).
+  ServerAppToggleSwitching,
 
   /// This event is sent when key is down. Event data is a pointer to KeyInfo (count == 1)
   KeyStateKeyDown,

@@ -377,11 +377,74 @@ std::string Server::getName(const BaseClientProxy *client) const
   return name;
 }
 
+void Server::setPaused(bool paused)
+{
+  if (paused == m_paused) {
+    ipcSendToClient(QStringLiteral("paused"), paused ? QStringLiteral("true") : QStringLiteral("false"));
+    return;
+  }
+
+  if (paused) {
+    stopSwitch();
+    // Return control to primary without switchScreen()/jumpToScreen().
+    // Those arm m_holdPrimaryJumpZone and land on the last edge position;
+    // pause must match forceLeaveClient's clean primary enter at center so
+    // resume can edge-switch to the client again immediately.
+    // Reproduction: pause while active on a client, resume, move to the client
+    // edge — must switch. (Caller must be the core EventQueue thread.)
+    if (m_active != nullptr && m_primaryClient != nullptr && m_active != m_primaryClient) {
+      BaseClientProxy *leaving = m_active;
+      LOG_INFO(
+          "pause: returning from \"%s\" to primary center", getName(leaving).c_str()
+      );
+      if (!leaving->leave()) {
+        // ClientProxy leave always succeeds; keep forceLeaveClient semantics.
+        LOG_WARN("pause: leave failed for \"%s\"; forcing primary cutover", getName(leaving).c_str());
+      }
+      m_primaryClient->getCursorCenter(m_x, m_y);
+      m_xDelta = 0;
+      m_yDelta = 0;
+      m_xDelta2 = 0;
+      m_yDelta2 = 0;
+      m_dropSecondaryWarpDelta = false;
+      m_holdPrimaryJumpZone = false;
+      m_active = m_primaryClient;
+      ++m_seqNum;
+      m_primaryClient->enter(m_x, m_y, m_seqNum, m_primaryClient->getToggleMask(), false);
+    }
+    m_holdPrimaryJumpZone = false;
+    m_paused = true;
+    if (m_primaryClient != nullptr) {
+      const uint32_t sides = getActivePrimarySides();
+      m_primaryClient->reconfigure(sides);
+      LOG_DEBUG("pause: primary sides=0x%02x (expect 0 while paused)", sides);
+    }
+    LOG_INFO("screen switching paused (connections kept alive)");
+  } else {
+    m_paused = false;
+    stopSwitch();
+    m_holdPrimaryJumpZone = false;
+    m_dropSecondaryWarpDelta = false;
+    if (m_primaryClient != nullptr) {
+      const uint32_t sides = getActivePrimarySides();
+      m_primaryClient->reconfigure(sides);
+      LOG_INFO("screen switching resumed (primary sides=0x%02x)", sides);
+    } else {
+      LOG_INFO("screen switching resumed");
+    }
+    if (!isLockedToScreenServer()) {
+      stopRelativeMoves();
+    }
+  }
+
+  ipcSendToClient(QStringLiteral("paused"), m_paused ? QStringLiteral("true") : QStringLiteral("false"));
+}
+
 uint32_t Server::getActivePrimarySides() const
 {
   using enum DirectionMask;
   using enum Direction;
-  if (isLockedToScreenServer()) {
+  if (m_paused || isLockedToScreenServer()) {
     return 0;
   }
 
@@ -414,6 +477,10 @@ bool Server::isLockedToScreenServer() const
 
 bool Server::isLockedToScreen() const
 {
+  if (m_paused) {
+    return true;
+  }
+
   if (m_disableLockToScreen) {
     return false;
   }
@@ -447,6 +514,13 @@ int32_t Server::getJumpZoneSize(const BaseClientProxy *client) const
 void Server::switchScreen(BaseClientProxy *dst, int32_t x, int32_t y, bool forScreensaver)
 {
   assert(dst != nullptr);
+
+  // Pause blocks all screen swaps (including hotkeys) while connections stay up.
+  // setPaused() jumps to primary before setting m_paused, so that path is allowed.
+  if (m_paused && dst != m_active) {
+    LOG_DEBUG("ignored screen switch while paused");
+    return;
+  }
 
   int32_t dx;
   int32_t dy;
@@ -1329,12 +1403,13 @@ void Server::noSwitch(int32_t x, int32_t y)
 
 void Server::stopSwitch()
 {
-  if (m_switchScreen != nullptr) {
-    m_switchScreen = nullptr;
-    m_switchDir = Direction::NoDirection;
-    stopSwitchTwoTap();
-    stopSwitchWait();
-  }
+  // Always clear pending gate state (two-tap/wait), even if m_switchScreen was
+  // already nulled by a LockedToScreen reject while paused — otherwise resume
+  // can leave two-tap engaged and block the next edge attempt.
+  m_switchScreen = nullptr;
+  m_switchDir = Direction::NoDirection;
+  stopSwitchTwoTap();
+  stopSwitchWait();
 }
 
 void Server::startSwitchTwoTap()
@@ -1737,6 +1812,11 @@ void Server::handleClientCloseTimeout(BaseClientProxy *client)
 
 void Server::handleSwitchToScreenEvent(const Event &event)
 {
+  if (m_paused) {
+    LOG_DEBUG("ignored switch-to-screen hotkey while paused");
+    return;
+  }
+
   const auto *info = static_cast<SwitchToScreenInfo *>(event.getData());
 
   ClientList::const_iterator index = m_clients.find(info->m_screen);
@@ -1749,6 +1829,11 @@ void Server::handleSwitchToScreenEvent(const Event &event)
 
 void Server::handleSwitchInDirectionEvent(const Event &event)
 {
+  if (m_paused) {
+    LOG_DEBUG("ignored switch-in-direction hotkey while paused");
+    return;
+  }
+
   const auto *info = static_cast<SwitchInDirectionInfo *>(event.getData());
 
   // jump to screen in chosen direction from center of this screen
@@ -1764,6 +1849,11 @@ void Server::handleSwitchInDirectionEvent(const Event &event)
 
 void Server::handleToggleScreenEvent(const Event &)
 {
+  if (m_paused) {
+    LOG_DEBUG("ignored toggle-screen hotkey while paused");
+    return;
+  }
+
   // Get the list of connected screens in config order
   std::vector<std::string> screens;
   getClients(screens);

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width,initial-scale=1" />
+		<title>Deskflow Pause</title>
+		<script type="module" src="https://sdpi-components.dev/releases/v4/sdpi-components.js"></script>
+	</head>
+	<body>
+		<!--
+			Optional override for deskflow-cli.exe.
+			Default: C:\Program Files\Deskflow\deskflow-cli.exe
+		-->
+		<sdpi-item label="CLI path">
+			<sdpi-textfield
+				setting="cliPath"
+				placeholder="C:\Program Files\Deskflow\deskflow-cli.exe"
+			></sdpi-textfield>
+		</sdpi-item>
+		<sdpi-item>
+			<details class="sdpi-item-value">
+				<summary>About</summary>
+				<p>
+					Leave blank to use the default Deskflow install path. Press the key to
+					toggle pause; the icon follows live status from <code>deskflow-cli</code>.
+				</p>
+			</details>
+		</sdpi-item>
+	</body>
+</html>

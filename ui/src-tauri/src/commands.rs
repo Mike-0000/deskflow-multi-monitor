@@ -41,10 +41,11 @@ pub async fn get_settings(core: State<'_, SharedCore>) -> Result<AppSettings, St
 }
 
 #[tauri::command]
-pub async fn set_settings(core: State<'_, SharedCore>, settings: AppSettings) -> Result<(), String> {
-    let mut guard = core.lock().await;
-    *guard.settings_mut() = settings;
-    guard.save_settings()
+pub async fn set_settings(
+    core: State<'_, SharedCore>,
+    settings: AppSettings,
+) -> Result<(), String> {
+    CoreProcess::apply_settings(core.inner().clone(), settings).await
 }
 
 #[tauri::command]
@@ -72,6 +73,16 @@ pub async fn core_start(core: State<'_, SharedCore>) -> Result<(), String> {
 #[tauri::command]
 pub async fn core_stop(core: State<'_, SharedCore>) -> Result<(), String> {
     CoreProcess::stop(core.inner().clone()).await
+}
+
+#[tauri::command]
+pub async fn core_pause(core: State<'_, SharedCore>) -> Result<(), String> {
+    CoreProcess::pause(core.inner().clone()).await
+}
+
+#[tauri::command]
+pub async fn core_resume(core: State<'_, SharedCore>) -> Result<(), String> {
+    CoreProcess::resume(core.inner().clone()).await
 }
 
 #[tauri::command]
@@ -143,10 +154,7 @@ pub async fn daemon_log_path() -> Result<(), String> {
     let mut daemon = crate::daemon::DaemonClient::connect()
         .await
         .map_err(|e| e.to_string())?;
-    daemon
-        .request_log_path()
-        .await
-        .map_err(|e| e.to_string())
+    daemon.request_log_path().await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]

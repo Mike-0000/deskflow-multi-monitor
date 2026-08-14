@@ -182,9 +182,23 @@ public:
     m_clientListener = p;
   }
 
+  //! Pause or resume screen switching without dropping clients
+  /*!
+  When paused, edge and hotkey switches are blocked and the cursor is
+  returned to the primary screen. Client connections stay alive so
+  resume can take effect immediately.
+  */
+  void setPaused(bool paused);
+
   //@}
   //! @name accessors
   //@{
+
+  //! True when screen switching is paused
+  bool isPaused() const
+  {
+    return m_paused;
+  }
 
   //! Get the network protocol
   /*!
@@ -503,6 +517,9 @@ private:
 
   // screen locking (former scroll lock)
   bool m_lockedToScreen = false;
+
+  // UI / IPC pause: block switching without disconnecting clients
+  bool m_paused = false;
 
   bool m_defaultLockToScreenState = false;
   bool m_disableLockToScreen = false;

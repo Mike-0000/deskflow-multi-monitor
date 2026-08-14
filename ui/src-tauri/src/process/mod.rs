@@ -2,6 +2,7 @@ use crate::config::{AppSettings, CoreMode, ProcessMode, ServerConfig, SettingsSt
 use crate::daemon::DaemonClient;
 use crate::ipc::{IpcClient, IpcEvent};
 use crate::version;
+use crate::window_visibility;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -10,7 +11,7 @@ use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration, Instant};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -46,6 +47,7 @@ pub struct CoreStatus {
     pub peer_fingerprint: Option<String>,
     pub retry_in: Option<i32>,
     pub last_error: Option<String>,
+    pub paused: bool,
 }
 
 impl Default for CoreStatus {
@@ -66,6 +68,7 @@ impl Default for CoreStatus {
             peer_fingerprint: None,
             retry_in: None,
             last_error: None,
+            paused: false,
         }
     }
 }
@@ -74,6 +77,7 @@ pub struct CoreProcess {
     pub status: CoreStatus,
     child: Option<Child>,
     ipc: Option<IpcClient>,
+    daemon: Option<DaemonClient>,
     settings_store: SettingsStore,
     settings: AppSettings,
     server_config: ServerConfig,
@@ -84,6 +88,11 @@ impl CoreProcess {
     pub fn new() -> Self {
         let settings_store = SettingsStore::new();
         let settings = settings_store.load();
+        if settings_store.needs_normalization() {
+            if let Err(error) = settings_store.save(&settings) {
+                log::warn!("failed to normalize Deskflow settings: {error}");
+            }
+        }
         let server_config = {
             let path = settings_store.server_config_file(&settings);
             let mut config = ServerConfig::load_conf(&path).unwrap_or_default();
@@ -98,6 +107,7 @@ impl CoreProcess {
             status,
             child: None,
             ipc: None,
+            daemon: None,
             settings_store,
             settings,
             server_config,
@@ -137,6 +147,57 @@ impl CoreProcess {
         Ok(())
     }
 
+    pub async fn apply_settings(
+        this: Arc<Mutex<Self>>,
+        settings: AppSettings,
+    ) -> Result<(), String> {
+        let (old_settings, mode_changed, was_running) = {
+            let guard = this.lock().await;
+            (
+                guard.settings.clone(),
+                guard.settings.process_mode != settings.process_mode,
+                matches!(
+                    guard.status.process_state,
+                    ProcessState::Starting | ProcessState::Started | ProcessState::RetryPending
+                ),
+            )
+        };
+
+        if mode_changed && was_running {
+            // Stop while the old mode is still authoritative so the correct
+            // owner is asked to release the core.
+            Self::stop(this.clone()).await?;
+        }
+
+        let save_error = {
+            let mut guard = this.lock().await;
+            *guard.settings_mut() = settings;
+            if let Err(error) = guard.save_settings() {
+                *guard.settings_mut() = old_settings;
+                guard.status.process_mode = guard.settings.process_mode;
+                Some(error)
+            } else {
+                None
+            }
+        };
+
+        if let Some(error) = save_error {
+            if mode_changed && was_running {
+                if let Err(restart_error) = Self::start(this.clone()).await {
+                    return Err(format!(
+                        "{error}; restoring the previous core owner also failed: {restart_error}"
+                    ));
+                }
+            }
+            return Err(error);
+        }
+
+        if mode_changed && was_running {
+            Self::start(this).await?;
+        }
+        Ok(())
+    }
+
     pub fn persist_server_config(&self) -> Result<PathBuf, String> {
         let path = self.settings_store.server_config_file(&self.settings);
         self.server_config.save_conf(&path)?;
@@ -144,18 +205,28 @@ impl CoreProcess {
     }
 
     fn emit_log(&self, line: &str) {
+        // High-frequency: do not wake a tray-hidden WebView for every line.
+        if !window_visibility::is_visible() {
+            return;
+        }
         if let Some(app) = &self.app {
             let _ = app.emit("deskflow-log", line.to_string());
         }
     }
 
     fn emit_status(&self) {
+        if !window_visibility::is_visible() {
+            return;
+        }
         if let Some(app) = &self.app {
             let _ = app.emit("deskflow-process", &self.status);
         }
     }
 
     fn emit_ipc(&self, event: &IpcEvent) {
+        if !window_visibility::is_visible() {
+            return;
+        }
         if let Some(app) = &self.app {
             let _ = app.emit("deskflow-ipc", event);
         }
@@ -178,7 +249,13 @@ impl CoreProcess {
         if let Ok(cwd) = std::env::current_dir() {
             candidates.push(cwd.join("build").join("bin").join(&bin));
             candidates.push(cwd.join("..").join("build").join("bin").join(&bin));
-            candidates.push(cwd.join("..").join("..").join("build").join("bin").join(&bin));
+            candidates.push(
+                cwd.join("..")
+                    .join("..")
+                    .join("build")
+                    .join("bin")
+                    .join(&bin),
+            );
         }
         if let Ok(override_path) = std::env::var("DESKFLOW_CORE_PATH") {
             candidates.insert(0, PathBuf::from(override_path));
@@ -208,6 +285,7 @@ impl CoreProcess {
             guard.status.last_error = None;
             guard.status.connected_clients.clear();
             guard.status.peer_fingerprint = None;
+            guard.status.paused = false;
             guard.emit_status();
             guard.emit_log("starting core...");
         }
@@ -295,14 +373,27 @@ impl CoreProcess {
         {
             let mut guard = this.lock().await;
             guard.child = Some(child);
-            guard.status.process_state = ProcessState::Started;
             guard.emit_status();
-            guard.emit_log(&format!("spawned {} {}", core_path.display(), args.join(" ")));
+            guard.emit_log(&format!(
+                "spawned {} {}",
+                core_path.display(),
+                args.join(" ")
+            ));
         }
 
-        // Match Qt: wait briefly then connect IPC
-        sleep(Duration::from_secs(1)).await;
-        Self::connect_core_ipc(this.clone()).await?;
+        if let Err(error) = Self::wait_for_core_ipc(this.clone(), Duration::from_secs(10)).await {
+            let mut guard = this.lock().await;
+            if let Some(mut child) = guard.child.take() {
+                let _ = child.kill().await;
+            }
+            return Err(error);
+        }
+
+        {
+            let mut guard = this.lock().await;
+            guard.status.process_state = ProcessState::Started;
+            guard.emit_status();
+        }
 
         // Watch child exit
         let watch = this.clone();
@@ -352,7 +443,7 @@ impl CoreProcess {
             guard.settings_store.path().to_path_buf()
         };
 
-        let mut daemon = DaemonClient::connect().await.map_err(|e| e.to_string())?;
+        let mut daemon = Self::connect_daemon_until(Duration::from_secs(10)).await?;
         daemon
             .send_log_level(&log_level)
             .await
@@ -364,25 +455,51 @@ impl CoreProcess {
         daemon.send_start().await.map_err(|e| e.to_string())?;
 
         {
-            let mut guard = this.lock().await;
-            guard.status.process_state = ProcessState::Started;
+            let guard = this.lock().await;
             guard.emit_log(&format!(
-                "daemon start issued (settings={}, conf hint={})",
+                "daemon start accepted (settings={}, conf hint={})",
                 settings_file.display(),
                 conf_path.display()
             ));
-            guard.emit_status();
         }
 
-        sleep(Duration::from_secs(1)).await;
-        // Version skew must fail closed. Other IPC connect races (core still
-        // starting under the watchdog) are non-fatal — keep tailing logs.
-        if let Err(e) = Self::connect_core_ipc(this.clone()).await {
-            if e.contains("version mismatch") {
-                return Err(e);
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let daemon_status = loop {
+            let status = daemon.status().await.map_err(|e| e.to_string())?;
+            if status.state == "Running" && status.process_id != 0 {
+                break status;
             }
-            let guard = this.lock().await;
-            guard.emit_log(&format!("core ipc connect deferred: {e}"));
+            if Instant::now() >= deadline {
+                let detail = if status.last_error.is_empty() {
+                    format!("watchdog state={}", status.state)
+                } else {
+                    format!(
+                        "watchdog state={}, error={}",
+                        status.state, status.last_error
+                    )
+                };
+                return Err(format!(
+                    "service accepted start but core was not ready: {detail}"
+                ));
+            }
+            sleep(Duration::from_millis(250)).await;
+        };
+        // The watchdog being Running is not enough; the core IPC hello below
+        // must also succeed before the UI reports the core as started.
+        Self::wait_for_core_ipc(this.clone(), Duration::from_secs(10)).await?;
+
+        {
+            let mut guard = this.lock().await;
+            guard.daemon = Some(daemon);
+            guard.status.process_state = ProcessState::Started;
+            guard.emit_log(&format!(
+                "service core ready (pid={}, session={}, integrityRid={}, uiAccess={})",
+                daemon_status.process_id,
+                daemon_status.session_id,
+                daemon_status.integrity_rid,
+                daemon_status.ui_access
+            ));
+            guard.emit_status();
         }
 
         // Tail daemon log
@@ -408,22 +525,62 @@ impl CoreProcess {
                             for line in buf.lines() {
                                 guard.emit_log(line);
                             }
-                            if matches!(guard.status.process_state, ProcessState::Stopped | ProcessState::Stopping)
-                            {
+                            if matches!(
+                                guard.status.process_state,
+                                ProcessState::Stopped | ProcessState::Stopping
+                            ) {
                                 break;
                             }
                         }
                     }
                 }
                 let guard = tail_this.lock().await;
-                if matches!(guard.status.process_state, ProcessState::Stopped | ProcessState::Stopping)
-                {
+                if matches!(
+                    guard.status.process_state,
+                    ProcessState::Stopped | ProcessState::Stopping
+                ) {
                     break;
                 }
             }
         });
 
         Ok(())
+    }
+
+    async fn connect_daemon_until(wait: Duration) -> Result<DaemonClient, String> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let last_error = match DaemonClient::connect().await {
+                Ok(daemon) => return Ok(daemon),
+                Err(error) => error.to_string(),
+            };
+            if last_error.contains("version mismatch") {
+                return Err(last_error);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!(
+                    "Deskflow Windows service is unavailable: {last_error}. Start or repair the Deskflow service; Desktop fallback is disabled."
+                ));
+            }
+            sleep(Duration::from_millis(300)).await;
+        }
+    }
+
+    async fn wait_for_core_ipc(this: Arc<Mutex<Self>>, wait: Duration) -> Result<(), String> {
+        let deadline = Instant::now() + wait;
+        loop {
+            let last_error = match Self::connect_core_ipc(this.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(error) => error,
+            };
+            if last_error.contains("version mismatch") {
+                return Err(last_error);
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("core IPC did not become ready: {last_error}"));
+            }
+            sleep(Duration::from_millis(250)).await;
+        }
     }
 
     async fn connect_core_ipc(this: Arc<Mutex<Self>>) -> Result<(), String> {
@@ -493,7 +650,11 @@ impl CoreProcess {
                             guard.status.connected_clients = if msg.args.is_empty() {
                                 vec![]
                             } else {
-                                msg.args.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+                                msg.args
+                                    .split(',')
+                                    .map(|s| s.trim().to_string())
+                                    .filter(|s| !s.is_empty())
+                                    .collect()
                             };
                             guard.emit_status();
                         }
@@ -513,7 +674,13 @@ impl CoreProcess {
                             guard.emit_log(&format!("unrecognised client: {}", msg.args));
                         }
                         "connectionRefused" => {
-                            guard.status.last_error = Some(format!("connection refused: {}", msg.args));
+                            guard.status.last_error =
+                                Some(format!("connection refused: {}", msg.args));
+                            guard.emit_status();
+                        }
+                        "paused" => {
+                            guard.status.paused =
+                                matches!(msg.args.as_str(), "true" | "1" | "on");
                             guard.emit_status();
                         }
                         "missingKeyboardLayouts" => {
@@ -558,12 +725,30 @@ impl CoreProcess {
         };
 
         if process_mode == ProcessMode::Service {
-            if let Ok(mut daemon) = DaemonClient::connect().await {
-                let _ = daemon.send_stop().await;
+            let daemon = {
+                let mut guard = this.lock().await;
+                guard.daemon.take()
+            };
+            let mut daemon = match daemon {
+                Some(daemon) => daemon,
+                None => DaemonClient::connect().await.map_err(|e| e.to_string())?,
+            };
+            daemon.send_stop().await.map_err(|e| e.to_string())?;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let status = daemon.status().await.map_err(|e| e.to_string())?;
+                if status.state == "Idle" && status.process_id == 0 {
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    return Err(format!(
+                        "daemon did not stop core (state={}, pid={})",
+                        status.state, status.process_id
+                    ));
+                }
+                sleep(Duration::from_millis(200)).await;
             }
-        }
-
-        {
+        } else {
             let mut guard = this.lock().await;
             if let Some(ipc) = guard.ipc.as_mut() {
                 let _ = ipc.send_stop().await;
@@ -581,9 +766,34 @@ impl CoreProcess {
             guard.status.process_state = ProcessState::Stopped;
             guard.status.connection_state = ConnectionState::Disconnected;
             guard.status.connected_clients.clear();
+            guard.status.paused = false;
             guard.emit_log("core stopped");
             guard.emit_status();
         }
+        Ok(())
+    }
+
+    pub async fn pause(this: Arc<Mutex<Self>>) -> Result<(), String> {
+        let mut guard = this.lock().await;
+        let Some(ipc) = guard.ipc.as_mut() else {
+            return Err("core is not running".into());
+        };
+        ipc.send_pause().await.map_err(|e| e.to_string())?;
+        guard.status.paused = true;
+        guard.emit_log("pausing screen switching...");
+        guard.emit_status();
+        Ok(())
+    }
+
+    pub async fn resume(this: Arc<Mutex<Self>>) -> Result<(), String> {
+        let mut guard = this.lock().await;
+        let Some(ipc) = guard.ipc.as_mut() else {
+            return Err("core is not running".into());
+        };
+        ipc.send_resume().await.map_err(|e| e.to_string())?;
+        guard.status.paused = false;
+        guard.emit_log("resuming screen switching...");
+        guard.emit_status();
         Ok(())
     }
 
@@ -607,7 +817,31 @@ impl CoreProcess {
         }
 
         if Self::connect_core_ipc(this.clone()).await.is_err() {
-            return;
+            let process_mode = {
+                let guard = this.lock().await;
+                guard.settings.process_mode
+            };
+            if process_mode != ProcessMode::Service {
+                return;
+            }
+
+            let Ok(mut daemon) = DaemonClient::connect().await else {
+                return;
+            };
+            let Ok(status) = daemon.status().await else {
+                return;
+            };
+            if matches!(status.state.as_str(), "Idle" | "Unavailable") {
+                return;
+            }
+            if Self::wait_for_core_ipc(this.clone(), Duration::from_secs(10))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let mut guard = this.lock().await;
+            guard.daemon = Some(daemon);
         }
 
         let mut guard = this.lock().await;

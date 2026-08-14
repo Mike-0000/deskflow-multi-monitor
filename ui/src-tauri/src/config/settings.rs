@@ -141,13 +141,14 @@ fn default_process_mode() -> ProcessMode {
 
 pub struct SettingsStore {
     path: PathBuf,
+    source_path: PathBuf,
 }
 
 impl SettingsStore {
     pub fn new() -> Self {
-        Self {
-            path: Self::settings_file_path(),
-        }
+        let path = Self::settings_file_path();
+        let source_path = Self::settings_source_file(&path);
+        Self { path, source_path }
     }
 
     pub fn settings_file_path() -> PathBuf {
@@ -157,6 +158,22 @@ impl SettingsStore {
             }
         }
         Self::user_settings_file()
+    }
+
+    fn settings_source_file(canonical: &Path) -> PathBuf {
+        if canonical.exists() {
+            return canonical.to_path_buf();
+        }
+
+        #[cfg(windows)]
+        {
+            let system = Self::system_settings_file();
+            if system.exists() {
+                return system;
+            }
+        }
+
+        canonical.to_path_buf()
     }
 
     pub fn user_dir() -> PathBuf {
@@ -205,10 +222,16 @@ impl SettingsStore {
         Self::user_dir().join(format!("{}.conf", version::info().app_name))
     }
 
+    pub fn system_settings_file() -> PathBuf {
+        Self::system_dir().join(format!("{}.conf", version::info().app_name))
+    }
+
     pub fn portable_settings_file() -> Option<PathBuf> {
         std::env::current_exe().ok().and_then(|exe| {
-            exe.parent()
-                .map(|p| p.join("settings").join(format!("{}.conf", version::info().app_name)))
+            exe.parent().map(|p| {
+                p.join("settings")
+                    .join(format!("{}.conf", version::info().app_name))
+            })
         })
     }
 
@@ -258,25 +281,18 @@ impl SettingsStore {
 
     pub fn load(&self) -> AppSettings {
         let mut settings = AppSettings::default();
-        if !self.path.exists() {
+        settings.process_mode = self.environment_process_mode();
+
+        if !self.source_path.exists() {
             return settings;
         }
-        let Ok(ini) = Ini::load_from_file(&self.path) else {
+        let Ok(ini) = Ini::load_from_file(&self.source_path) else {
             return settings;
         };
 
-        let get = |key: &str| -> Option<String> {
-            // QSettings IniFormat often stores as General/key or flat key
-            for section in ini.sections() {
-                if let Some(v) = ini.get_from(section, key) {
-                    return Some(v.to_string());
-                }
-            }
-            // Also try with path-style keys used by Qt (client/remoteHost)
-            None
-        };
-
-        // Qt stores keys like "client/remoteHost" in the General section or as nested.
+        // Keep a flattened view for the UI, but read known settings through
+        // `get_qsettings_value` below. Earlier Tauri builds wrote literal
+        // slash-containing keys in [General], which QSettings cannot read.
         let mut raw = HashMap::new();
         for (section, props) in ini.iter() {
             for (k, v) in props.iter() {
@@ -289,7 +305,7 @@ impl SettingsStore {
         }
         settings.raw = raw.clone();
 
-        let g = |key: &str| raw.get(key).cloned().or_else(|| get(key));
+        let g = |key: &str| get_qsettings_value(&ini, key);
 
         if let Some(v) = g("core/coreMode") {
             settings.core_mode = CoreMode::from_ini(&v);
@@ -376,23 +392,32 @@ impl SettingsStore {
 
         let mut ini = if self.path.exists() {
             Ini::load_from_file(&self.path).unwrap_or_default()
+        } else if self.source_path.exists() {
+            Ini::load_from_file(&self.source_path).unwrap_or_default()
         } else {
             Ini::new()
         };
 
         let set = |ini: &mut Ini, key: &str, value: String| {
-            // Store as Qt-style path keys in General section
-            ini.set_to(Some("General"), key.to_string(), value);
+            set_qsettings_value(ini, key, value);
         };
 
-        set(&mut ini, "core/coreMode", settings.core_mode.as_ini().into());
+        set(
+            &mut ini,
+            "core/coreMode",
+            settings.core_mode.as_ini().into(),
+        );
         set(
             &mut ini,
             "core/processMode",
             settings.process_mode.as_ini().into(),
         );
         set(&mut ini, "client/remoteHost", settings.remote_host.clone());
-        set(&mut ini, "core/computerName", settings.computer_name.clone());
+        set(
+            &mut ini,
+            "core/computerName",
+            settings.computer_name.clone(),
+        );
         set(&mut ini, "core/port", settings.port.to_string());
         set(&mut ini, "core/interface", settings.interface.clone());
         set(&mut ini, "log/level", settings.log_level.clone());
@@ -406,15 +431,27 @@ impl SettingsStore {
             "gui/startCoreWithGui",
             bool_str(settings.auto_start_core),
         );
-        set(&mut ini, "security/tlsEnabled", bool_str(settings.tls_enabled));
+        set(
+            &mut ini,
+            "security/tlsEnabled",
+            bool_str(settings.tls_enabled),
+        );
         set(
             &mut ini,
             "security/checkPeerFingerprints",
             bool_str(settings.check_peers),
         );
         set(&mut ini, "daemon/elevate", bool_str(settings.elevate));
-        set(&mut ini, "core/preventSleep", bool_str(settings.prevent_sleep));
-        set(&mut ini, "client/languageSync", bool_str(settings.language_sync));
+        set(
+            &mut ini,
+            "core/preventSleep",
+            bool_str(settings.prevent_sleep),
+        );
+        set(
+            &mut ini,
+            "client/languageSync",
+            bool_str(settings.language_sync),
+        );
         set(
             &mut ini,
             "client/invertYScroll",
@@ -488,6 +525,80 @@ impl SettingsStore {
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    pub fn needs_normalization(&self) -> bool {
+        if self.source_path != self.path {
+            return true;
+        }
+        let Ok(ini) = Ini::load_from_file(&self.source_path) else {
+            return false;
+        };
+        ini.section(Some("General"))
+            .map(|section| section.iter().any(|(key, _)| key.contains('/')))
+            .unwrap_or(false)
+    }
+
+    fn environment_process_mode(&self) -> ProcessMode {
+        if Self::is_portable_mode() {
+            return ProcessMode::Desktop;
+        }
+
+        #[cfg(windows)]
+        {
+            // Installed builds live under Program Files and have a Windows
+            // service. Custom/remote installs write an explicit processMode,
+            // while unpacked developer and portable builds remain Desktop.
+            if executable_is_under_program_files() {
+                return ProcessMode::Service;
+            }
+        }
+
+        ProcessMode::Desktop
+    }
+
+    #[cfg(test)]
+    fn for_test(path: PathBuf, source_path: PathBuf) -> Self {
+        Self { path, source_path }
+    }
+}
+
+fn get_qsettings_value(ini: &Ini, path: &str) -> Option<String> {
+    // Prefer the malformed Tauri value when both forms exist: it represents
+    // the user's most recent GUI save. The next save normalizes it.
+    if let Some(value) = ini.get_from(Some("General"), path) {
+        return Some(value.to_string());
+    }
+    if let Some(value) = ini.get_from(None::<String>, path) {
+        return Some(value.to_string());
+    }
+
+    let (section, key) = path.split_once('/')?;
+    ini.get_from(Some(section), key).map(ToString::to_string)
+}
+
+fn set_qsettings_value(ini: &mut Ini, path: &str, value: String) {
+    // Remove the incompatible representation emitted by Tauri V2 before
+    // writing the section/key form consumed by QSettings.
+    ini.delete_from(Some("General"), path);
+    ini.delete_from(None::<String>, path);
+
+    if let Some((section, key)) = path.split_once('/') {
+        ini.set_to(Some(section), key.to_string(), value);
+    } else {
+        ini.set_to(Some("General"), path.to_string(), value);
+    }
+}
+
+#[cfg(windows)]
+fn executable_is_under_program_files() -> bool {
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    ["ProgramFiles", "ProgramFiles(x86)"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(PathBuf::from)
+        .any(|root| exe.starts_with(root))
 }
 
 fn parse_bool(value: &str, default: bool) -> bool {
@@ -500,4 +611,79 @@ fn parse_bool(value: &str, default: bool) -> bool {
 
 fn bool_str(v: bool) -> String {
     if v { "true" } else { "false" }.into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_paths(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("deskflow-settings-{name}-{nonce}"));
+        let canonical = dir.join("user").join("Deskflow.conf");
+        let source = dir.join("system").join("Deskflow.conf");
+        (dir, canonical, source)
+    }
+
+    #[test]
+    fn loads_legacy_qsettings_sections() {
+        let (dir, canonical, source) = temp_paths("legacy");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(
+            &source,
+            "[core]\ncoreMode=1\nprocessMode=0\n\n[client]\nremoteHost=10.0.0.4\n",
+        )
+        .unwrap();
+
+        let settings = SettingsStore::for_test(canonical, source).load();
+        assert_eq!(settings.core_mode, CoreMode::Client);
+        assert_eq!(settings.process_mode, ProcessMode::Service);
+        assert_eq!(settings.remote_host, "10.0.0.4");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn malformed_tauri_values_win_once_and_are_normalized_on_save() {
+        let (dir, canonical, source) = temp_paths("normalize");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(
+            &source,
+            "[core]\ncoreMode=2\nprocessMode=1\n\n[General]\ncore/coreMode=1\ncore/processMode=0\n",
+        )
+        .unwrap();
+
+        let store = SettingsStore::for_test(canonical.clone(), source);
+        let settings = store.load();
+        assert_eq!(settings.core_mode, CoreMode::Client);
+        assert_eq!(settings.process_mode, ProcessMode::Service);
+        store.save(&settings).unwrap();
+
+        let written = fs::read_to_string(canonical).unwrap();
+        assert!(written.contains("[core]"));
+        assert!(written.contains("coreMode=1"));
+        assert!(written.contains("processMode=0"));
+        assert!(!written.contains("core/coreMode"));
+        assert!(!written.contains("core/processMode"));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn save_preserves_unknown_sections_from_fallback_source() {
+        let (dir, canonical, source) = temp_paths("preserve");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, "[custom]\nkeepMe=yes\n\n[core]\ncoreMode=1\n").unwrap();
+
+        let store = SettingsStore::for_test(canonical.clone(), source);
+        let settings = store.load();
+        store.save(&settings).unwrap();
+
+        let written = fs::read_to_string(canonical).unwrap();
+        assert!(written.contains("[custom]"));
+        assert!(written.contains("keepMe=yes"));
+        let _ = fs::remove_dir_all(dir);
+    }
 }

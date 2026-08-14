@@ -1,5 +1,6 @@
 use crate::commands::SharedCore;
 use crate::process::CoreProcess;
+use crate::window_visibility;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -18,35 +19,30 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .tooltip("Deskflow")
-        .on_menu_event(|app, event| {
-            match event.id.as_ref() {
-                "show" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-                "quit" => {
-                    app.exit(0);
-                }
-                "start" => {
-                    let handle = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Some(core) = handle.try_state::<SharedCore>() {
-                            let _ = CoreProcess::start(core.inner().clone()).await;
-                        }
-                    });
-                }
-                "stop" => {
-                    let handle = app.clone();
-                    tauri::async_runtime::spawn(async move {
-                        if let Some(core) = handle.try_state::<SharedCore>() {
-                            let _ = CoreProcess::stop(core.inner().clone()).await;
-                        }
-                    });
-                }
-                _ => {}
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "show" => {
+                window_visibility::show_main(app);
             }
+            "quit" => {
+                app.exit(0);
+            }
+            "start" => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(core) = handle.try_state::<SharedCore>() {
+                        let _ = CoreProcess::start(core.inner().clone()).await;
+                    }
+                });
+            }
+            "stop" => {
+                let handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Some(core) = handle.try_state::<SharedCore>() {
+                        let _ = CoreProcess::stop(core.inner().clone()).await;
+                    }
+                });
+            }
+            _ => {}
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -56,10 +52,7 @@ pub fn setup_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
             } = event
             {
                 let app = tray.app_handle();
-                if let Some(window) = app.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.set_focus();
-                }
+                window_visibility::show_main(app);
             }
         })
         .build(app)?;

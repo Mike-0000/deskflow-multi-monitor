@@ -140,6 +140,26 @@ void ServerApp::forceReconnect()
   }
 }
 
+void ServerApp::setSwitchingPaused(bool paused)
+{
+  m_switchingPaused = paused;
+  if (m_server != nullptr) {
+    m_server->setPaused(paused);
+  } else {
+    // Core may receive pause before the server object exists; report state anyway.
+    ipcSendToClient(QStringLiteral("paused"), paused ? QStringLiteral("true") : QStringLiteral("false"));
+    LOG_INFO("screen switching %s (server not started yet)", paused ? "paused" : "resumed");
+  }
+}
+
+bool ServerApp::isSwitchingPaused() const
+{
+  if (m_server != nullptr) {
+    return m_server->isPaused();
+  }
+  return m_switchingPaused;
+}
+
 void ServerApp::handleClientConnected(const Event &, ClientListener *listener)
 {
   ClientProxy *client = listener->getNextClient();
@@ -371,6 +391,9 @@ bool ServerApp::startServer()
     listener->setServer(m_server);
     m_server->setListener(listener);
     m_listener = listener;
+    if (m_switchingPaused) {
+      m_server->setPaused(true);
+    }
     LOG_DEBUG("started server, waiting for clients");
     ipcSendConnectionState(deskflow::core::ConnectionState::Listening);
     m_serverState = Started;
@@ -535,6 +558,15 @@ int ServerApp::mainLoop()
   getEvents()->addHandler(EventTypes::ServerAppResetServer, getEvents()->getSystemTarget(), [this](const auto &) {
     resetServer();
   });
+  getEvents()->addHandler(EventTypes::ServerAppPauseSwitching, getEvents()->getSystemTarget(), [this](const auto &) {
+    setSwitchingPaused(true);
+  });
+  getEvents()->addHandler(EventTypes::ServerAppResumeSwitching, getEvents()->getSystemTarget(), [this](const auto &) {
+    setSwitchingPaused(false);
+  });
+  getEvents()->addHandler(EventTypes::ServerAppToggleSwitching, getEvents()->getSystemTarget(), [this](const auto &) {
+    setSwitchingPaused(!isSwitchingPaused());
+  });
 
   // run event loop.  if startServer() failed we're supposed to retry
   // later.  the timer installed by startServer() will take care of
@@ -545,6 +577,9 @@ int ServerApp::mainLoop()
   LOG_DEBUG("stopping server");
   getEvents()->removeHandler(EventTypes::ServerAppForceReconnect, getEvents()->getSystemTarget());
   getEvents()->removeHandler(EventTypes::ServerAppReloadConfig, getEvents()->getSystemTarget());
+  getEvents()->removeHandler(EventTypes::ServerAppPauseSwitching, getEvents()->getSystemTarget());
+  getEvents()->removeHandler(EventTypes::ServerAppResumeSwitching, getEvents()->getSystemTarget());
+  getEvents()->removeHandler(EventTypes::ServerAppToggleSwitching, getEvents()->getSystemTarget());
   cleanupServer();
   LOG_INFO("stopped server");
 

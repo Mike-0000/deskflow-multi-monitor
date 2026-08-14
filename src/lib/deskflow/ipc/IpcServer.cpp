@@ -52,6 +52,7 @@ void IpcServer::handleNewConnection()
 
   LOG_DEBUG("%s ipc server got new connection", m_typeName.constData());
   m_clients.insert(clientSocket);
+  m_clientBuffers.insert(clientSocket, QByteArray{});
 
   connect(clientSocket, &QLocalSocket::readyRead, this, &IpcServer::handleReadyRead);
   connect(clientSocket, &QLocalSocket::disconnected, this, &IpcServer::handleDisconnected);
@@ -63,17 +64,14 @@ void IpcServer::handleReadyRead()
   const auto clientSocket = qobject_cast<QLocalSocket *>(sender());
   LOG_VERBOSE("%s ipc server ready to read data", m_typeName.constData());
 
-  QByteArray data = clientSocket->readAll();
-  if (data.isEmpty()) {
+  const QByteArray incoming = clientSocket->readAll();
+  if (incoming.isEmpty()) {
     LOG_WARN("%s ipc server got empty message", m_typeName.constData());
     return;
   }
 
-  // we don't handle incomplete messages yet; each socket read must have delimiters.
-  if (!data.contains('\n')) {
-    LOG_WARN("%s ipc server got incomplete message: %s", m_typeName.constData(), data.constData());
-    return;
-  }
+  auto &data = m_clientBuffers[clientSocket];
+  data.append(incoming);
 
   // each message is delimited by a newline to keep the protocol super simple.
   while (data.contains('\n')) {
@@ -83,6 +81,14 @@ void IpcServer::handleReadyRead()
     QString message = QString::fromUtf8(messageData);
     processMessage(clientSocket, message);
   }
+
+  if (data.size() > 1024 * 1024) {
+    LOG_WARN("%s ipc server client exceeded receive buffer limit", m_typeName.constData());
+    data.clear();
+    writeToClientSocket(clientSocket, QStringLiteral("error=message too large"));
+    clientSocket->flush();
+    clientSocket->disconnectFromServer();
+  }
 }
 
 void IpcServer::handleDisconnected()
@@ -90,7 +96,9 @@ void IpcServer::handleDisconnected()
   const auto clientSocket = qobject_cast<QLocalSocket *>(sender());
   LOG_DEBUG("%s ipc server client disconnected", m_typeName.constData());
   m_clients.remove(clientSocket);
+  m_authenticatedClients.remove(clientSocket);
   m_mismatchedClients.remove(clientSocket);
+  m_clientBuffers.remove(clientSocket);
   clientSocket->deleteLater();
 }
 
@@ -99,21 +107,25 @@ void IpcServer::handleErrorOccurred()
   const auto clientSocket = qobject_cast<QLocalSocket *>(sender());
   LOG_ERR("%s ipc server client error: %s", m_typeName.constData(), clientSocket->errorString().toUtf8().constData());
   m_clients.remove(clientSocket);
+  m_authenticatedClients.remove(clientSocket);
   m_mismatchedClients.remove(clientSocket);
+  m_clientBuffers.remove(clientSocket);
   clientSocket->deleteLater();
 }
 
 void IpcServer::processMessage(QLocalSocket *clientSocket, const QString &message)
 {
   LOG_VERBOSE("%s ipc server got message: %s", m_typeName.constData(), message.toUtf8().constData());
-  const auto parts = message.split('=');
-  if (parts.isEmpty()) {
+  const auto separator = message.indexOf('=');
+  const auto command = separator >= 0 ? message.left(separator) : message;
+  const QStringList parts = separator >= 0 ? QStringList{command, message.mid(separator + 1)} : QStringList{command};
+  if (command.isEmpty()) {
     LOG_ERR("%s ipc server got invalid message: %s", m_typeName.constData(), message.toUtf8().constData());
     writeToClientSocket(clientSocket, QStringLiteral("error"));
     return;
   }
 
-  if (const auto &command = parts.at(0); command == QStringLiteral("hello")) {
+  if (command == QStringLiteral("hello")) {
     if (parts.size() < 2) {
       LOG_ERR("%s ipc client hello missing version", m_typeName.constData());
       writeToClientSocket(clientSocket, "error=missing version");
@@ -132,6 +144,7 @@ void IpcServer::processMessage(QLocalSocket *clientSocket, const QString &messag
           clientVersion.toUtf8().constData(), versionId.toUtf8().constData()
       );
       m_mismatchedClients.insert(clientSocket);
+      m_authenticatedClients.remove(clientSocket);
       writeToClientSocket(clientSocket, QStringLiteral("versionMismatch=%1").arg(versionId));
       clientSocket->flush();
       // Do not replay pending state; client must stop this process and reinstall matching binaries.
@@ -139,6 +152,7 @@ void IpcServer::processMessage(QLocalSocket *clientSocket, const QString &messag
     }
 
     m_mismatchedClients.remove(clientSocket);
+    m_authenticatedClients.insert(clientSocket);
     LOG_DEBUG("%s ipc server sending hello back", m_typeName.constData());
     writeToClientSocket(clientSocket, QStringLiteral("hello=%1").arg(versionId));
 
@@ -149,20 +163,26 @@ void IpcServer::processMessage(QLocalSocket *clientSocket, const QString &messag
       writeToClientSocket(clientSocket, pending);
     }
     m_pendingMessages.clear();
-  } else if (command == QStringLiteral("noop")) {
-    LOG_DEBUG("%s ipc server got noop message", m_typeName.constData());
-    writeToClientSocket(clientSocket, QStringLiteral("ok"));
   } else if (m_mismatchedClients.contains(clientSocket)) {
     // After version skew, only accept stop so the GUI can tear down the stale peer.
     if (command == QStringLiteral("stop")) {
       processCommand(clientSocket, command, parts);
     } else {
       LOG_WARN(
-          "%s ipc rejecting '%s' from version-mismatched client (reinstall matching binaries)",
-          m_typeName.constData(), command.toUtf8().constData()
+          "%s ipc rejecting '%s' from version-mismatched client (reinstall matching binaries)", m_typeName.constData(),
+          command.toUtf8().constData()
       );
       writeToClientSocket(clientSocket, QStringLiteral("error=version mismatch"));
     }
+  } else if (!m_authenticatedClients.contains(clientSocket)) {
+    LOG_WARN("%s ipc client sent command before hello", m_typeName.constData());
+    writeToClientSocket(clientSocket, QStringLiteral("error=handshake required"));
+    clientSocket->flush();
+    clientSocket->disconnectFromServer();
+    return;
+  } else if (command == QStringLiteral("noop")) {
+    LOG_DEBUG("%s ipc server got noop message", m_typeName.constData());
+    writeToClientSocket(clientSocket, QStringLiteral("ok=noop"));
   } else {
     processCommand(clientSocket, command, parts);
   }
@@ -174,7 +194,7 @@ void IpcServer::broadcastCommand(const QString &command, const QString &args)
 {
   const auto message = args.isEmpty() ? command : QStringLiteral("%1=%2").arg(command, args);
 
-  if (m_clients.isEmpty()) {
+  if (m_authenticatedClients.isEmpty()) {
     LOG_VERBOSE(
         "%s ipc server has no clients, message queued: %s", m_typeName.constData(), message.toUtf8().constData()
     );
@@ -183,16 +203,16 @@ void IpcServer::broadcastCommand(const QString &command, const QString &args)
   }
 
   LOG_VERBOSE(
-      "%s ipc server broadcasting message to %d clients: %s", m_typeName.constData(), m_clients.size(),
+      "%s ipc server broadcasting message to %d clients: %s", m_typeName.constData(), m_authenticatedClients.size(),
       message.toUtf8().constData()
   );
-  for (auto *client : std::as_const(m_clients)) {
+  for (auto *client : std::as_const(m_authenticatedClients)) {
     writeToClientSocket(client, message);
     client->flush();
   }
 }
 
-void IpcServer::writeToClientSocket(QLocalSocket *&clientSocket, const QString &message) const
+void IpcServer::writeToClientSocket(QLocalSocket *clientSocket, const QString &message) const
 {
   QByteArray messageData = message.toUtf8() + '\n';
   qint64 bytesWritten = clientSocket->write(messageData);

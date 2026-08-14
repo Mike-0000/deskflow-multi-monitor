@@ -12,12 +12,13 @@
 
 void ipcSendToClient(const QString &command, const QString &args)
 {
-  // Queued because callers may not be on the main thread,
-  // and QLocalSocket can only be written to from its owning thread.
+  // AutoConnection: Direct when already on the IPC server's thread (so pause/toggle
+  // replies include paused= before the command handler returns), Queued otherwise
+  // because QLocalSocket must be written from its owning thread.
   auto &server = deskflow::core::ipc::CoreIpcServer::instance();
   QMetaObject::invokeMethod(
       &server, [command, args] { deskflow::core::ipc::CoreIpcServer::instance().broadcastCommand(command, args); },
-      Qt::QueuedConnection
+      Qt::AutoConnection
   );
 }
 

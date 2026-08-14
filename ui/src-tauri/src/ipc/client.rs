@@ -175,6 +175,22 @@ impl IpcClient {
         self.send("stop").await
     }
 
+    pub async fn send_pause(&mut self) -> Result<(), IpcError> {
+        self.send("pause").await
+    }
+
+    pub async fn send_resume(&mut self) -> Result<(), IpcError> {
+        self.send("resume").await
+    }
+
+    pub async fn send_toggle(&mut self) -> Result<(), IpcError> {
+        self.send("toggle").await
+    }
+
+    pub async fn send_status(&mut self) -> Result<(), IpcError> {
+        self.send("status").await
+    }
+
     pub fn disconnect(&mut self) {
         self.write = None;
         let _ = self.event_tx.send(IpcEvent::ServerShutdown);

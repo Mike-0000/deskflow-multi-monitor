@@ -8,6 +8,7 @@ import {
   Lock,
   Monitor,
   Palette,
+  Pause,
   Play,
   RotateCcw,
   Settings2,
@@ -15,7 +16,7 @@ import {
   Terminal,
   User,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LayoutEditor } from "./components/LayoutEditor";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { ClientConfigDialog } from "./components/ClientConfigDialog";
@@ -48,7 +49,13 @@ function connectionLabel(state: ConnectionState): string {
   }
 }
 
-function processLabel(state: ProcessState | undefined): string {
+function processLabel(
+  state: ProcessState | undefined,
+  paused?: boolean,
+): string {
+  if (paused && (state === "started" || state === "starting")) {
+    return "Paused";
+  }
   switch (state) {
     case "started":
       return "Running";
@@ -86,6 +93,14 @@ export default function App() {
     null,
   );
   const [layoutSaveMsg, setLayoutSaveMsg] = useState<string | null>(null);
+  const [windowVisible, setWindowVisible] = useState(true);
+  const windowVisibleRef = useRef(true);
+
+  const setUiSuspended = useCallback((visible: boolean) => {
+    windowVisibleRef.current = visible;
+    setWindowVisible(visible);
+    document.documentElement.classList.toggle("ui-suspended", !visible);
+  }, []);
 
   const refresh = useCallback(async () => {
     const [st, se, sc, ver] = await Promise.all([
@@ -111,6 +126,7 @@ export default function App() {
     async function subscribe() {
       try {
         const logUnsub = await listen<string>("deskflow-log", (e) => {
+          if (!windowVisibleRef.current) return;
           setLogs((prev) => {
             const next = [...prev, e.payload];
             return next.length > MAX_LOG ? next.slice(-MAX_LOG) : next;
@@ -123,6 +139,7 @@ export default function App() {
         unsubs.push(logUnsub);
 
         const processUnsub = await listen<CoreStatus>("deskflow-process", (e) => {
+          if (!windowVisibleRef.current) return;
           setStatus(e.payload);
         });
         if (cancelled) {
@@ -139,6 +156,22 @@ export default function App() {
           return;
         }
         unsubs.push(ipcUnsub);
+
+        const visibleUnsub = await listen<boolean>(
+          "deskflow-window-visible",
+          (e) => {
+            const visible = Boolean(e.payload);
+            setUiSuspended(visible);
+            if (visible) {
+              refresh().catch((err) => setError(String(err)));
+            }
+          },
+        );
+        if (cancelled) {
+          visibleUnsub();
+          return;
+        }
+        unsubs.push(visibleUnsub);
       } catch (e) {
         if (!cancelled) {
           setError(`event subscribe failed: ${String(e)}`);
@@ -151,6 +184,19 @@ export default function App() {
       cancelled = true;
       unsubs.forEach((u) => u());
     };
+  }, [refresh, setUiSuspended]);
+
+  useEffect(() => {
+    const onVisibility = () => {
+      // Extra compositor pause on OS minimize/occlusion without changing tray state.
+      if (document.hidden) {
+        document.documentElement.classList.add("ui-suspended");
+      } else if (windowVisibleRef.current) {
+        document.documentElement.classList.remove("ui-suspended");
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
   }, []);
 
   async function saveSettings(next: AppSettings) {
@@ -230,6 +276,19 @@ export default function App() {
     }
   }
 
+  async function togglePause() {
+    setBusy(true);
+    setError(null);
+    try {
+      await invoke(status?.paused ? "core_resume" : "core_pause");
+      await refresh();
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function restart() {
     setBusy(true);
     setError(null);
@@ -283,7 +342,10 @@ export default function App() {
           </div>
           <div className={tc.badgeRunning}>
             <span className={tc.badgeDotRunning} />
-            {badgeText(processLabel(status?.processState), upper)}
+            {badgeText(
+              processLabel(status?.processState, status?.paused),
+              upper,
+            )}
           </div>
           {status?.secureSocket && (
             <div className={tc.badgeEncrypted}>
@@ -295,8 +357,8 @@ export default function App() {
       </header>
 
       <main className={tc.main}>
-        <div className={tc.glowA} />
-        <div className={tc.glowB} />
+        {tc.glowA !== "hidden" && <div className={tc.glowA} />}
+        {tc.glowB !== "hidden" && <div className={tc.glowB} />}
 
         <section className={tc.card}>
           <div className={tc.modeRow}>
@@ -431,6 +493,26 @@ export default function App() {
                 <Square className="size-3.5 shrink-0 fill-current" />
                 Stop
               </button>
+              {isServer && (
+                <button
+                  type="button"
+                  onClick={togglePause}
+                  disabled={busy || !running}
+                  className={tc.btnStop}
+                  title={
+                    status?.paused
+                      ? "Resume screen switching (connection stays alive)"
+                      : "Pause screen switching without disconnecting clients"
+                  }
+                >
+                  {status?.paused ? (
+                    <Play className="size-4 shrink-0 fill-current" />
+                  ) : (
+                    <Pause className="size-4 shrink-0 fill-current" />
+                  )}
+                  {status?.paused ? "Resume" : "Pause"}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={restart}
@@ -476,7 +558,7 @@ export default function App() {
           </div>
         </section>
 
-        {isServer && showLayout && serverConfig && (
+        {isServer && showLayout && serverConfig && windowVisible && (
           <section className={tc.layoutCard}>
             <div className={tc.layoutHeader}>
               <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6">

@@ -1,0 +1,42 @@
+---
+description: WinRM remoting to Deskflow server PC 10.1.1.22
+alwaysApply: true
+---
+
+# Deskflow Remote Server (10.1.1.22)
+
+## Host
+
+| | |
+|---|---|
+| IP | `10.1.1.22` |
+| Hostname | `DESKTOP-U00QJVN` |
+| WinRM / remoting user | `DESKTOP-U00QJVN\mike` |
+| Interactive desktop / Stream Deck user | `micha` |
+
+Stream Deck and Elgato profile data live under **`micha`**, not `mike`. Install plugins and inspect Stream Deck paths for `micha`.
+
+## Credentials
+
+- Cred file: `%USERPROFILE%\.deskflow-remote-10.1.1.22.cred` (Export-Clixml / DPAPI for this Windows user)
+- **Never commit** the `.cred` file or paste passwords into the repo/chat logs
+- A null/empty import causes interactive password prompts — treat that as broken and re-save
+
+## How agents must remoting
+
+- Always use [`scripts/Invoke-RemoteServer.ps1`](scripts/Invoke-RemoteServer.ps1)
+- **Never** call `Get-Credential` in agent sessions (no interactive UI)
+- Re-save credentials only via [`scripts/Save-RemoteServerCred.ps1`](scripts/Save-RemoteServerCred.ps1) after a validated username/password round-trip (user runs this interactively once)
+
+```powershell
+.\scripts\Invoke-RemoteServer.ps1 { hostname; whoami }
+.\scripts\Save-RemoteServerCred.ps1   # interactive, user only
+```
+
+## Key remote paths
+
+| What | Path |
+|---|---|
+| Deskflow install | `C:\Program Files\Deskflow\` |
+| Stream Deck plugins (`micha`) | `C:\Users\micha\AppData\Roaming\Elgato\StreamDeck\Plugins\` |
+| Stream Deck profiles (`micha`) | `C:\Users\micha\AppData\Roaming\Elgato\StreamDeck\ProfilesV3\` |

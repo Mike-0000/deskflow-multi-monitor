@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <malloc.h>
+#include <vector>
 
 // these are only defined when WINVER >= 0x0500
 #if !defined(SPI_GETMOUSESPEED)
@@ -87,6 +88,70 @@
 
 static void setCursorVisibility(bool visible);
 
+static DWORD processIntegrityRid(DWORD processId)
+{
+  HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+  if (process == nullptr)
+    return 0;
+
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
+    CloseHandle(process);
+    return 0;
+  }
+
+  DWORD size = 0;
+  GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &size);
+  std::vector<BYTE> buffer(size);
+  DWORD rid = 0;
+  if (size > 0 && GetTokenInformation(token, TokenIntegrityLevel, buffer.data(), size, &size)) {
+    const auto label = reinterpret_cast<const TOKEN_MANDATORY_LABEL *>(buffer.data());
+    if (IsValidSid(label->Label.Sid)) {
+      const auto count = *GetSidSubAuthorityCount(label->Label.Sid);
+      if (count > 0)
+        rid = *GetSidSubAuthority(label->Label.Sid, count - 1);
+    }
+  }
+
+  CloseHandle(token);
+  CloseHandle(process);
+  return rid;
+}
+
+static bool currentProcessUiAccess()
+{
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    return false;
+  DWORD value = 0;
+  DWORD size = sizeof(value);
+  const bool ok = GetTokenInformation(token, TokenUIAccess, &value, sizeof(value), &size) != FALSE;
+  CloseHandle(token);
+  return ok && value != 0;
+}
+
+static void logSendInputFailure(const char *kind, DWORD sendInputError)
+{
+  static DWORD lastForegroundPid = 0;
+  static ULONGLONG lastLogTime = 0;
+
+  DWORD foregroundPid = 0;
+  GetWindowThreadProcessId(GetForegroundWindow(), &foregroundPid);
+  const auto now = GetTickCount64();
+  if (foregroundPid == lastForegroundPid && now - lastLogTime < 2000)
+    return;
+  lastForegroundPid = foregroundPid;
+  lastLogTime = now;
+
+  const DWORD coreRid = processIntegrityRid(GetCurrentProcessId());
+  const DWORD foregroundRid = foregroundPid != 0 ? processIntegrityRid(foregroundPid) : 0;
+  LOG_WARN(
+      "SendInput failed for %s; coreIntegrityRid=%lu, foregroundPid=%lu, foregroundIntegrityRid=%lu, uiAccess=%s, "
+      "error=%lu. If the foreground integrity is higher, Windows UIPI is the likely cause.",
+      kind, coreRid, foregroundPid, foregroundRid, currentProcessUiAccess() ? "yes" : "no", sendInputError
+  );
+}
+
 static void send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
 {
   INPUT inp;
@@ -96,7 +161,9 @@ static void send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
   inp.ki.dwFlags = dwFlags & 0xF;
   inp.ki.time = 0;
   inp.ki.dwExtraInfo = 0;
-  SendInput(1, &inp, sizeof(inp));
+  SetLastError(0);
+  if (SendInput(1, &inp, sizeof(inp)) != 1)
+    logSendInputFailure("keyboard", GetLastError());
 }
 
 static UINT send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
@@ -109,7 +176,11 @@ static UINT send_mouse_input(DWORD dwFlags, DWORD dx, DWORD dy, DWORD dwData)
   inp.mi.mouseData = dwData;
   inp.mi.time = 0;
   inp.mi.dwExtraInfo = 0;
-  return SendInput(1, &inp, sizeof(inp));
+  SetLastError(0);
+  const UINT sent = SendInput(1, &inp, sizeof(inp));
+  if (sent != 1)
+    logSendInputFailure("mouse", GetLastError());
+  return sent;
 }
 
 //
@@ -433,7 +504,9 @@ void MSWindowsDesks::deskMouseMove(int32_t x, int32_t y) const
   if (SetCursorPos(x, y)) {
     POINT cursorPos;
     if (GetCursorPos(&cursorPos)) {
-      LOG_VERBOSE("SetCursorPos fake mouse move requested %d,%d; cursor is now %ld,%ld", x, y, cursorPos.x, cursorPos.y);
+      LOG_VERBOSE(
+          "SetCursorPos fake mouse move requested %d,%d; cursor is now %ld,%ld", x, y, cursorPos.x, cursorPos.y
+      );
     } else {
       LOG_DEBUG("SetCursorPos fake mouse move requested %d,%d; cursor position read failed: %lu", x, y, GetLastError());
     }
@@ -458,12 +531,8 @@ void MSWindowsDesks::deskMouseMove(int32_t x, int32_t y) const
   const DWORD normalizedX = (DWORD)((65535.0f * (clampedX - vx)) / (vw - 1) + 0.5f);
   const DWORD normalizedY = (DWORD)((65535.0f * (clampedY - vy)) / (vh - 1) + 0.5f);
   SetLastError(0);
-  const UINT sent = send_mouse_input(
-      MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-      normalizedX,
-      normalizedY,
-      0
-  );
+  const UINT sent =
+      send_mouse_input(MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK, normalizedX, normalizedY, 0);
   const DWORD sendInputError = sent == 0 ? GetLastError() : 0;
 
   POINT cursorPos;

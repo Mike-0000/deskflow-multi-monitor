@@ -62,6 +62,16 @@ $dest = Join-Path $binDir 'deskflow-ui.exe'
 Copy-Item $built $dest -Force
 Write-Host "==> staged $dest" -ForegroundColor Green
 
+$cliBuilt = Join-Path $uiRoot 'src-tauri\target\release\deskflow-cli.exe'
+if (Test-Path $cliBuilt) {
+  $cliDest = Join-Path $binDir 'deskflow-cli.exe'
+  Copy-Item $cliBuilt $cliDest -Force
+  Write-Host "==> staged $cliDest" -ForegroundColor Green
+}
+else {
+  Write-Host "==> WARNING: deskflow-cli.exe not found at $cliBuilt (Stream Deck pause needs it)" -ForegroundColor Yellow
+}
+
 if (-not $CoreSource) {
   $defaultCore = Join-Path $binDir 'deskflow-core.exe'
   if (Test-Path $defaultCore) {

@@ -50,6 +50,7 @@ int main(int argc, char **argv)
 
   QCoreApplication app(argc, argv);
   QCoreApplication::setApplicationName(QStringLiteral("%1 Daemon").arg(kAppName));
+  QCoreApplication::setApplicationVersion(QStringLiteral("%1+%2").arg(kVersion, kVersionGitSha));
 
   QCommandLineParser parser;
   parser.addHelpOption();

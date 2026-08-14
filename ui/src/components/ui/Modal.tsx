@@ -19,7 +19,7 @@ export function Modal({
   if (!open) return null;
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-[2px]"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -33,7 +33,7 @@ export function Modal({
           wide ? "w-full max-w-3xl" : "w-full max-w-lg"
         }`}
       >
-        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)]/95 px-5 py-4 backdrop-blur">
+        <div className="sticky top-0 z-10 flex items-start justify-between gap-3 border-b border-[var(--border)] bg-[var(--bg-elevated)] px-5 py-4">
           <div className="min-w-0">
             <h2 id="modal-title" className="text-base font-semibold tracking-tight">
               {title}

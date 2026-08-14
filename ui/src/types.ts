@@ -27,6 +27,7 @@ export interface CoreStatus {
   peerFingerprint: string | null;
   retryIn: number | null;
   lastError: string | null;
+  paused: boolean;
 }
 
 export interface AppSettings {

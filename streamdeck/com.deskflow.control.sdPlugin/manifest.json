@@ -1,0 +1,54 @@
+{
+	"Name": "Deskflow",
+	"Version": "1.26.0.0",
+	"Author": "Deskflow",
+	"Actions": [
+		{
+			"Name": "Pause",
+			"UUID": "com.deskflow.control.pause",
+			"Icon": "imgs/actions/pause/icon",
+			"Tooltip": "Toggle Deskflow pause. Shows Active or Paused.",
+			"PropertyInspectorPath": "ui/pause.html",
+			"Controllers": [
+				"Keypad"
+			],
+			"DisableAutomaticStates": true,
+			"States": [
+				{
+					"Name": "Active",
+					"Image": "imgs/actions/pause/key-active",
+					"TitleAlignment": "bottom",
+					"FontSize": 11,
+					"Title": "Active"
+				},
+				{
+					"Name": "Paused",
+					"Image": "imgs/actions/pause/key-paused",
+					"TitleAlignment": "bottom",
+					"FontSize": 11,
+					"Title": "Paused"
+				}
+			]
+		}
+	],
+	"Category": "Deskflow",
+	"CategoryIcon": "imgs/plugin/category-icon",
+	"CodePath": "bin/plugin.js",
+	"Description": "Control Deskflow pause from Stream Deck. Live Active/Paused state stays in sync with the Deskflow GUI via deskflow-cli.",
+	"Icon": "imgs/plugin/marketplace",
+	"SDKVersion": 3,
+	"Software": {
+		"MinimumVersion": "7.1"
+	},
+	"OS": [
+		{
+			"Platform": "windows",
+			"MinimumVersion": "10"
+		}
+	],
+	"Nodejs": {
+		"Version": "20",
+		"Debug": "enabled"
+	},
+	"UUID": "com.deskflow.control"
+}

@@ -27,6 +27,41 @@
 
 #include <QStringDecoder>
 
+#include <vector>
+
+namespace {
+
+DWORD tokenIntegrityRid(HANDLE token)
+{
+  DWORD size = 0;
+  GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &size);
+  if (size == 0)
+    return 0;
+
+  std::vector<BYTE> buffer(size);
+  if (!GetTokenInformation(token, TokenIntegrityLevel, buffer.data(), size, &size))
+    return 0;
+
+  const auto label = reinterpret_cast<const TOKEN_MANDATORY_LABEL *>(buffer.data());
+  if (!IsValidSid(label->Label.Sid))
+    return 0;
+  const auto count = *GetSidSubAuthorityCount(label->Label.Sid);
+  if (count == 0)
+    return 0;
+  return *GetSidSubAuthority(label->Label.Sid, count - 1);
+}
+
+template <TOKEN_INFORMATION_CLASS InfoClass> DWORD tokenDword(HANDLE token)
+{
+  DWORD value = 0;
+  DWORD size = sizeof(value);
+  if (!GetTokenInformation(token, InfoClass, &value, sizeof(value), &size))
+    return 0;
+  return value;
+}
+
+} // namespace
+
 //
 // Free functions
 //
@@ -226,6 +261,10 @@ void MSWindowsWatchdog::mainLoop(const void *)
         LOG_WARN("no process to stop");
       }
       shutdownExistingProcesses();
+      m_tokenSessionId = 0;
+      m_tokenIntegrityRid = 0;
+      m_tokenElevated = false;
+      m_tokenUiAccess = false;
       m_processState = Idle;
     } break;
     }
@@ -260,6 +299,21 @@ bool MSWindowsWatchdog::isProcessRunning()
   return exitCode == STILL_ACTIVE;
 }
 
+MSWindowsWatchdog::Status MSWindowsWatchdog::status() const
+{
+  std::scoped_lock lock{m_processStateMutex};
+  Status status;
+  status.state = processStateToString(m_processState);
+  status.processId = m_process != nullptr ? m_process->info().dwProcessId : 0;
+  status.sessionId = m_tokenSessionId;
+  status.integrityRid = m_tokenIntegrityRid;
+  status.elevated = m_tokenElevated;
+  status.uiAccess = m_tokenUiAccess;
+  status.startFailures = m_startFailures;
+  status.lastError = m_lastError;
+  return status;
+}
+
 void MSWindowsWatchdog::startProcess()
 {
   if (m_command.empty()) {
@@ -271,6 +325,11 @@ void MSWindowsWatchdog::startProcess()
     m_process->shutdown();
     m_process.reset();
   }
+
+  m_tokenSessionId = 0;
+  m_tokenIntegrityRid = 0;
+  m_tokenElevated = false;
+  m_tokenUiAccess = false;
 
   m_process = std::make_unique<deskflow::platform::MSWindowsProcess>(m_command, m_outputWritePipe, m_outputWritePipe);
 
@@ -285,11 +344,24 @@ void MSWindowsWatchdog::startProcess()
 
     SECURITY_ATTRIBUTES sa;
     ZeroMemory(&sa, sizeof(SECURITY_ATTRIBUTES));
+    sa.nLength = sizeof(SECURITY_ATTRIBUTES);
     HANDLE userToken = getUserToken(&sa, m_elevateProcess);
 
     // set UIAccess to fix Windows 8 GUI interaction
     DWORD uiAccess = 1;
-    SetTokenInformation(userToken, TokenUIAccess, &uiAccess, sizeof(DWORD));
+    if (!SetTokenInformation(userToken, TokenUIAccess, &uiAccess, sizeof(DWORD))) {
+      LOG_WARN("failed to set core token UIAccess: %s", windowsErrorToString(GetLastError()).c_str());
+    }
+
+    m_tokenSessionId = tokenDword<TokenSessionId>(userToken);
+    m_tokenIntegrityRid = tokenIntegrityRid(userToken);
+    m_tokenElevated = tokenDword<TokenElevation>(userToken) != 0;
+    m_tokenUiAccess = tokenDword<TokenUIAccess>(userToken) != 0;
+    LOG_INFO(
+        "core launch token, session=%lu, integrityRid=%lu, elevated=%s, uiAccess=%s, requestedElevated=%s",
+        m_tokenSessionId, m_tokenIntegrityRid, m_tokenElevated ? "yes" : "no", m_tokenUiAccess ? "yes" : "no",
+        m_elevateProcess ? "yes" : "no"
+    );
 
     createRet = m_process->startAsUser(userToken, &sa);
   }
@@ -313,6 +385,7 @@ void MSWindowsWatchdog::startProcess()
     }
 
     LOG_DEBUG("started core process from watchdog");
+    m_lastError.clear();
     LOG_VERBOSE(
         "process info, session=%i, elevated=%s, command: %s", //
         m_session.getActiveSessionId(), m_elevateProcess ? "yes" : "no", m_command.c_str()
@@ -331,6 +404,7 @@ void MSWindowsWatchdog::setProcessConfig(const std::string_view &command, bool e
 
   if (m_command.empty()) {
     LOG_DEBUG("command cleared, queueing process stop");
+    m_lastError.clear();
     m_processState = ProcessState::StopPending;
   } else {
     LOG_DEBUG("command changed, queueing process start");
@@ -434,8 +508,10 @@ MSWindowsWatchdog::ProcessState MSWindowsWatchdog::handleStartError(const std::s
   m_startFailures++;
 
   if (!message.empty()) {
+    m_lastError = std::string(message);
     LOG_CRIT("daemon failed to start process, error: %s", message.data());
   } else {
+    m_lastError = "unknown start error";
     LOG_CRIT("daemon failed to start process, unknown error");
   }
 

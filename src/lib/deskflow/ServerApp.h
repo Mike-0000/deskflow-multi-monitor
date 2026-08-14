@@ -69,6 +69,8 @@ public:
   void reloadConfig();
   void forceReconnect();
   void resetServer();
+  void setSwitchingPaused(bool paused);
+  bool isSwitchingPaused() const;
   void handleClientConnected(const Event &e, ClientListener *listener);
   void closeServer(Server *server);
   void stopRetryTimer();
@@ -107,6 +109,7 @@ private:
   NetworkAddress getAddress(const NetworkAddress &address) const;
 
   bool m_suspended = false;
+  bool m_switchingPaused = false;
   Server *m_server = nullptr;
   ServerState m_serverState = ServerState::Uninitialized;
   deskflow::Screen *m_serverScreen = nullptr;

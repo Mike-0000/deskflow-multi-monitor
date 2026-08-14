@@ -417,7 +417,7 @@ export function LayoutEditor({
               onMoveMonitor={moveMonitor}
             />
             <div className="pointer-events-none absolute bottom-0 left-0 right-0 flex justify-center bg-gradient-to-t from-black/50 to-transparent px-6 pb-3 pt-12">
-              <p className="flex gap-4 rounded-full border border-white/5 bg-black/40 px-4 py-1.5 text-xs text-gray-400 backdrop-blur-sm">
+              <p className="flex gap-4 rounded-full border border-white/5 bg-black/80 px-4 py-1.5 text-xs text-gray-400">
                 <span>
                   <strong className="text-gray-300">Drag</strong> monitors to
                   arrange

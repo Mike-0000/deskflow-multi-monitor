@@ -1,7 +1,7 @@
 {
-  "version": "1.26.0.215",
-  "gitSha": "ba35f21f",
-  "versionId": "1.26.0.215+ba35f21f",
+  "version": "1.26.0.216",
+  "gitSha": "72cc97b5",
+  "versionId": "1.26.0.216+72cc97b5",
   "coreIpcName": "deskflow-core",
   "daemonIpcName": "deskflow-daemon",
   "guiIpcName": "deskflow-gui",

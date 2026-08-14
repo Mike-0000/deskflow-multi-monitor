@@ -49,6 +49,13 @@ foreach ($name in $required) {
     throw "Missing $name under $SourceDir. Re-run migrate so Qt runtime is deployed for deskflow-core."
   }
 }
+if (-not (Test-Path (Join-Path $SourceDir 'deskflow-cli.exe'))) {
+  Write-Host "WARNING: deskflow-cli.exe missing under $SourceDir (Stream Deck Pause needs it). Re-run migrate." -ForegroundColor Yellow
+}
+$sdPluginCheck = Join-Path $SourceDir 'StreamDeck\com.deskflow.control.sdPlugin\manifest.json'
+if (-not (Test-Path $sdPluginCheck)) {
+  Write-Host "WARNING: Stream Deck plugin missing under $SourceDir\StreamDeck (Install-Remote will skip plugin install)." -ForegroundColor Yellow
+}
 
 function Get-VersionNumberPart([string] $VersionId) {
   if (-not $VersionId) { return $null }
@@ -61,17 +68,42 @@ function Get-VersionNumberPart([string] $VersionId) {
   return $v
 }
 
+function Invoke-VersionProbe([string] $ExePath, [int] $TimeoutMilliseconds = 5000) {
+  if (-not (Test-Path $ExePath)) { return $null }
+
+  $stdout = [System.IO.Path]::GetTempFileName()
+  $stderr = [System.IO.Path]::GetTempFileName()
+  $process = $null
+  try {
+    $process = Start-Process -FilePath $ExePath -ArgumentList '--version' -PassThru -NoNewWindow `
+      -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+      $process.Kill()
+      $process.WaitForExit()
+      return $null
+    }
+    return ((Get-Content -LiteralPath $stdout -Raw -ErrorAction SilentlyContinue) +
+      (Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue))
+  } catch {
+    return $null
+  }
+  finally {
+    if ($process) { $process.Dispose() }
+    Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
+  }
+}
+
 function Get-CoreVersionIdFromExe([string] $ExePath) {
   if (-not (Test-Path $ExePath)) { return $null }
-  try {
-    $output = & $ExePath --version 2>&1 | Out-String
+  $output = Invoke-VersionProbe $ExePath
+  if ($output) {
     if ($output -match 'v(\d+\.\d+\.\d+(?:\.\d+)?)\s+\(([0-9a-fA-F]+)\)') {
       return "$($Matches[1])+$($Matches[2])"
     }
     if ($output -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
       return $Matches[1]
     }
-  } catch {}
+  }
   try {
     $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ExePath)
     if ($vi.ProductVersion) { return $vi.ProductVersion }
@@ -81,12 +113,15 @@ function Get-CoreVersionIdFromExe([string] $ExePath) {
 
 function Get-DaemonVersionFromExe([string] $ExePath) {
   if (-not (Test-Path $ExePath)) { return $null }
-  try {
-    $output = & $ExePath --version 2>&1 | Out-String
+  $output = Invoke-VersionProbe $ExePath
+  if ($output) {
+    if ($output -match '(\d+\.\d+\.\d+(?:\.\d+)?)\+([0-9a-fA-F]+)') {
+      return "$($Matches[1])+$($Matches[2])"
+    }
     if ($output -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
       return $Matches[1]
     }
-  } catch {}
+  }
   try {
     $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ExePath)
     if ($vi.ProductVersion) { return $vi.ProductVersion }
@@ -113,10 +148,10 @@ Write-Host "Version check before package:" -ForegroundColor Cyan
 Write-Host "  GUI:    $versionHint"
 Write-Host "  core:   $(if ($coreId) { $coreId } else { '(unknown)' })"
 Write-Host "  daemon: $(if ($daemonId) { $daemonId } else { '(unknown)' })"
-if (-not $guiNum -or -not $coreNum -or -not $daemonNum -or $coreNum -ne $guiNum -or $daemonNum -ne $guiNum) {
+if (-not $guiNum -or -not $coreNum -or -not $daemonNum -or $coreId -ne $versionHint -or $daemonId -ne $versionHint) {
   throw @"
 Refusing to package version-skewed Deskflow tree under $SourceDir.
-GUI/core/daemon must share the same version number (got GUI=$guiNum core=$coreNum daemon=$daemonNum).
+GUI/core/daemon must share the exact version and Git SHA (got GUI=$versionHint core=$coreId daemon=$daemonId).
 Re-run .\migrate-windows.ps1 with a full C++ + Tauri build first.
 "@
 }
@@ -158,14 +193,13 @@ $installScript = @'
 
 .DESCRIPTION
   Mode selection (first match wins):
-    -UseService / -Desktop explicit flags
-    Existing processMode=Service in Deskflow.conf -> keep Service
-    Existing coreMode=Server, or no interactive user -> Service
-    Otherwise -> Desktop (tray GUI owns deskflow-core)
+    -Desktop explicitly selects tray-owned Desktop mode
+    -NoService selects Desktop mode for portable/developer use
+    All normal installed Windows clients and servers -> Service
 
-  Service mode starts deskflow-daemon so the machine keeps listening even
-  without a tray session. Desktop mode sets startCoreWithGui=true and
-  falls back to Service if core never comes up after GUI launch.
+  Service mode starts deskflow-daemon so the elevated core can interact with
+  high-integrity and secure-desktop windows. Desktop mode is an explicit
+  portable/developer fallback and cannot control elevated applications.
 
 .PARAMETER InstallPath
   Target install directory.
@@ -198,8 +232,8 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ($UseService -and $Desktop) {
-  throw "Use either -UseService or -Desktop, not both."
+if ($UseService -and ($Desktop -or $NoService)) {
+  throw "-UseService cannot be combined with -Desktop or -NoService."
 }
 
 function Get-InteractiveUserName {
@@ -293,8 +327,8 @@ function Set-DeskflowIniValue {
       continue
     }
     if ($line -match ("^\s*" + [regex]::Escape("$Section/$Key") + "\s*=")) {
-      $out.Add("$Section/$Key=$Value")
-      $found = $true
+      # Tauri V2 wrote slash-path keys into [General]. QSettings cannot read
+      # those entries, so remove them and write the canonical section below.
       continue
     }
     $out.Add($line)
@@ -331,34 +365,74 @@ function Resolve-DeskflowInstallMode {
   if ($ForceService) { return 'Service' }
   if ($ForceDesktop) { return 'Desktop' }
 
-  $hadService = $false
-  $hadServer = $false
-  foreach ($path in (Get-DeskflowConfPaths -UserName $UserName)) {
-    $pm = Get-DeskflowIniValue -Path $path -Section 'core' -Key 'processMode'
-    if ($pm -eq '0' -or $pm -eq 'service' -or $pm -eq 'Service') { $hadService = $true }
-    $cm = Get-DeskflowIniValue -Path $path -Section 'core' -Key 'coreMode'
-    if ($cm -eq '2' -or $cm -eq 'server' -or $cm -eq 'Server') { $hadServer = $true }
-  }
-
-  if ($hadService) {
-    Write-Host "Keeping existing Service process mode (always-on core)." -ForegroundColor Cyan
-    return 'Service'
-  }
-  if ($hadServer) {
-    Write-Host "Server role detected; using Service mode so port 24800 stays listening." -ForegroundColor Cyan
-    return 'Service'
-  }
-  if (-not $UserName) {
-    Write-Host "No interactive user; using Service mode." -ForegroundColor Cyan
-    return 'Service'
-  }
-  return 'Desktop'
+  Write-Host "Using Service mode for installed Windows (elevated input and secure desktops)." -ForegroundColor Cyan
+  return 'Service'
 }
 
 function Test-DeskflowCoreAlive {
   if (Get-Process -Name 'deskflow-core' -ErrorAction SilentlyContinue) { return $true }
   $listeners = Get-NetTCPConnection -LocalPort 24800 -State Listen -ErrorAction SilentlyContinue
   return [bool]$listeners
+}
+
+function Invoke-DeskflowDaemonStart {
+  param(
+    [Parameter(Mandatory = $true)][string] $VersionId,
+    [Parameter(Mandatory = $true)][string] $SettingsFile,
+    [string] $LogLevel = 'INFO'
+  )
+
+  $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
+    '.', 'deskflow-daemon',
+    [System.IO.Pipes.PipeDirection]::InOut,
+    [System.IO.Pipes.PipeOptions]::Asynchronous
+  )
+  $reader = $null
+  $writer = $null
+  $lastStatus = 'no status received'
+  try {
+    $pipe.Connect(10000)
+    $reader = New-Object System.IO.StreamReader($pipe, [System.Text.UTF8Encoding]::new($false), $false, 4096, $true)
+    $writer = New-Object System.IO.StreamWriter($pipe, [System.Text.UTF8Encoding]::new($false), 4096, $true)
+    $writer.NewLine = "`n"
+    $writer.AutoFlush = $true
+
+    $writer.WriteLine("hello=$VersionId")
+    $hello = $reader.ReadLine()
+    if ($hello -ne "hello=$VersionId") { throw "Daemon handshake failed: $hello" }
+
+    foreach ($request in @(
+      @{ Message = "logLevel=$LogLevel"; Ack = 'ok=logLevel' },
+      @{ Message = "configFile=$SettingsFile"; Ack = 'ok=configFile' },
+      @{ Message = 'start'; Ack = 'ok=start' }
+    )) {
+      $writer.WriteLine($request.Message)
+      $response = $reader.ReadLine()
+      if ($response -ne $request.Ack) { throw "Daemon rejected '$($request.Message)': $response" }
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(25)
+    do {
+      $writer.WriteLine('status')
+      $response = $reader.ReadLine()
+      if ($response -like 'status=*') {
+        $status = $response.Substring(7) | ConvertFrom-Json
+        if ($status.state -eq 'Running' -and [int64]$status.processId -gt 0) {
+          Write-Host "Service core ready (PID=$($status.processId), session=$($status.sessionId), integrity=$($status.integrityRid))." -ForegroundColor Green
+          return
+        }
+        if ($status.lastError) { $lastStatus = "$($status.state): $($status.lastError)" }
+        else { $lastStatus = [string]$status.state }
+      }
+      Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Service core did not become ready: $lastStatus"
+  }
+  finally {
+    if ($writer) { $writer.Dispose() }
+    if ($reader) { $reader.Dispose() }
+    $pipe.Dispose()
+  }
 }
 
 function Ensure-DeskflowFirewallRules {
@@ -434,44 +508,28 @@ function Start-DeskflowGuiForUser {
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
-    $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
     $launched = $false
 
-    # Prefer a direct start when the installer itself is already on an interactive
-    # desktop (normal "Run as administrator" from a logged-on user). schtasks /IT
-    # often reports success without leaving a living tray process.
-    if ($sessionId -gt 0) {
-      try {
-        Start-Process -FilePath $GuiPath -WorkingDirectory $workDir | Out-Null
-        $launched = $true
-        Write-Host "Started deskflow.exe in session $sessionId (direct)." -ForegroundColor Cyan
-      }
-      catch {
-        Write-Host "Direct Start-Process failed: $($_.Exception.Message)" -ForegroundColor Yellow
-      }
+    # Install-Remote runs elevated. Launching directly would give the tray GUI
+    # the installer token, so bootstrap it explicitly at the user's limited level.
+    $bootstrap = 'DeskflowGuiBootstrap'
+    Unregister-ScheduledTask -TaskName $bootstrap -Confirm:$false -ErrorAction SilentlyContinue
+    $action = New-ScheduledTaskAction -Execute $GuiPath -WorkingDirectory $workDir
+    $principal = New-ScheduledTaskPrincipal -UserId $UserName -LogonType Interactive -RunLevel Limited
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1)
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    try {
+      Register-ScheduledTask -TaskName $bootstrap -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
+      Start-ScheduledTask -TaskName $bootstrap -ErrorAction SilentlyContinue
+      $launched = $true
+      Write-Host "Started limited deskflow.exe via scheduled task for $UserName." -ForegroundColor Cyan
     }
-
-    if (-not (Get-DeskflowGuiProcess)) {
-      # Fallback: interactive scheduled task with an explicit working directory.
-      $bootstrap = 'DeskflowGuiBootstrap'
+    catch {
+      Write-Host "Limited scheduled-task launch failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+    finally {
+      Start-Sleep -Seconds 2
       Unregister-ScheduledTask -TaskName $bootstrap -Confirm:$false -ErrorAction SilentlyContinue
-      $action = New-ScheduledTaskAction -Execute $GuiPath -WorkingDirectory $workDir
-      $principal = New-ScheduledTaskPrincipal -UserId $UserName -LogonType Interactive -RunLevel Limited
-      $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1)
-      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-      try {
-        Register-ScheduledTask -TaskName $bootstrap -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
-        Start-ScheduledTask -TaskName $bootstrap -ErrorAction SilentlyContinue
-        $launched = $true
-        Write-Host "Started deskflow.exe via scheduled task for $UserName." -ForegroundColor Cyan
-      }
-      catch {
-        Write-Host "Scheduled-task launch failed: $($_.Exception.Message)" -ForegroundColor Yellow
-      }
-      finally {
-        Start-Sleep -Seconds 2
-        Unregister-ScheduledTask -TaskName $bootstrap -Confirm:$false -ErrorAction SilentlyContinue
-      }
     }
 
     $guiProc = $null
@@ -513,6 +571,105 @@ function Start-DeskflowGuiForUser {
   }
   finally {
     $ErrorActionPreference = $prevEap
+  }
+}
+
+function Get-UserProfilePathForName {
+  param([Parameter(Mandatory = $true)][string] $UserName)
+  $short = if ($UserName -match '\\') { ($UserName -split '\\')[-1] } else { $UserName }
+  $guess = Join-Path $env:SystemDrive "Users\$short"
+  if (Test-Path $guess) { return $guess }
+  $fromCim = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
+    Where-Object { -not $_.Special -and $_.LocalPath -and ($_.LocalPath -like "*\$short") } |
+    Select-Object -First 1
+  if ($fromCim -and $fromCim.LocalPath) { return $fromCim.LocalPath }
+  return $null
+}
+
+function Install-DeskflowStreamDeckPlugin {
+  param(
+    [Parameter(Mandatory = $true)][string] $InstallPath,
+    [string] $InteractiveUserName
+  )
+
+  $pluginName = 'com.deskflow.control.sdPlugin'
+  $pluginSrc = Join-Path $InstallPath "StreamDeck\$pluginName"
+  if (-not (Test-Path (Join-Path $pluginSrc 'manifest.json'))) {
+    Write-Host "No Stream Deck plugin in package (skipped)." -ForegroundColor DarkGray
+    return
+  }
+
+  # Prefer the interactive Stream Deck desktop user (micha on the server), then
+  # the currently logged-on interactive account.
+  $targets = [System.Collections.Generic.List[string]]::new()
+  foreach ($candidate in @('micha', $InteractiveUserName)) {
+    if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
+    $short = if ($candidate -match '\\') { ($candidate -split '\\')[-1] } else { $candidate }
+    if (-not $targets.Contains($short)) { $targets.Add($short) }
+  }
+
+  $installedAny = $false
+  foreach ($short in $targets) {
+    $profilePath = Get-UserProfilePathForName -UserName $short
+    if (-not $profilePath) {
+      Write-Host "Stream Deck: no profile for user '$short' (skipped)." -ForegroundColor DarkGray
+      continue
+    }
+    $destRoot = Join-Path $profilePath 'AppData\Roaming\Elgato\StreamDeck\Plugins'
+    $dest = Join-Path $destRoot $pluginName
+    New-Item -ItemType Directory -Path $destRoot -Force | Out-Null
+
+    # Stop Stream Deck briefly so plugin files are not locked, then restart if it was running.
+    $sdProcs = @(Get-Process -Name 'StreamDeck' -ErrorAction SilentlyContinue |
+      Where-Object { $_.Path -and $_.Path -like '*\Elgato\StreamDeck\*' })
+    $wasRunning = $sdProcs.Count -gt 0
+    $sdExe = $null
+    if ($wasRunning) {
+      $sdExe = $sdProcs[0].Path
+      Write-Host "Stopping Stream Deck to update plugin for $short..."
+      foreach ($p in $sdProcs) {
+        try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+      }
+      Start-Sleep -Seconds 2
+    }
+
+    if (Test-Path $dest) {
+      Remove-Item $dest -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    robocopy $pluginSrc $dest /E /R:2 /W:2 /NFL /NDL /NJH /NJS /NC /NS | Out-Null
+    if ($LASTEXITCODE -ge 8) {
+      Write-Host "Stream Deck plugin copy failed for $short (robocopy exit $LASTEXITCODE)." -ForegroundColor Yellow
+      continue
+    }
+    Write-Host "Installed Stream Deck plugin for ${short}: $dest" -ForegroundColor Green
+    $installedAny = $true
+
+    if ($wasRunning -and $sdExe -and (Test-Path $sdExe)) {
+      $sdUser = if ($InteractiveUserName) { $InteractiveUserName } else { $short }
+      $bootstrap = 'DeskflowStreamDeckRestart'
+      Unregister-ScheduledTask -TaskName $bootstrap -Confirm:$false -ErrorAction SilentlyContinue
+      try {
+        $action = New-ScheduledTaskAction -Execute $sdExe
+        $principal = New-ScheduledTaskPrincipal -UserId $sdUser -LogonType Interactive -RunLevel Limited
+        $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1)
+        $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        Register-ScheduledTask -TaskName $bootstrap -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
+        Start-ScheduledTask -TaskName $bootstrap -ErrorAction SilentlyContinue
+        Write-Host "Restarted Stream Deck for $sdUser." -ForegroundColor Cyan
+      }
+      catch {
+        Write-Host "Could not restart Stream Deck automatically: $($_.Exception.Message)" -ForegroundColor Yellow
+        Write-Host "Start Stream Deck manually to load the Deskflow plugin." -ForegroundColor Yellow
+      }
+      finally {
+        Start-Sleep -Seconds 2
+        Unregister-ScheduledTask -TaskName $bootstrap -Confirm:$false -ErrorAction SilentlyContinue
+      }
+    }
+  }
+
+  if ($installedAny) {
+    Write-Host "Add the Deskflow -> Pause action to a Stream Deck key once (Software UI)." -ForegroundColor Cyan
   }
 }
 
@@ -594,6 +751,14 @@ if (Test-Path $payloadMarker) {
 }
 Write-Host "GUI binary verified (SHA256 match)." -ForegroundColor Green
 
+$cliInstalled = Join-Path $InstallPath 'deskflow-cli.exe'
+if (Test-Path $cliInstalled) {
+  Write-Host "deskflow-cli.exe present." -ForegroundColor Green
+}
+else {
+  Write-Host "WARNING: deskflow-cli.exe missing (Stream Deck Pause will not work)." -ForegroundColor Yellow
+}
+
 # Confirm core/daemon were replaced with the same build number as the GUI marker.
 function Get-InstallVersionNumberPart([string] $VersionId) {
   if (-not $VersionId) { return $null }
@@ -612,7 +777,17 @@ if (Test-Path (Join-Path $InstallPath 'deskflow-ui.json')) {
   } catch {}
 }
 $coreOut = & $coreExe --version 2>&1 | Out-String
-$daemonOut = & $daemon --version 2>&1 | Out-String
+$daemonOutFile = [System.IO.Path]::GetTempFileName()
+$daemonErrFile = [System.IO.Path]::GetTempFileName()
+try {
+  Start-Process -FilePath $daemon -ArgumentList '--version' -Wait -NoNewWindow `
+    -RedirectStandardOutput $daemonOutFile -RedirectStandardError $daemonErrFile | Out-Null
+  $daemonOut = ((Get-Content -LiteralPath $daemonOutFile -Raw -ErrorAction SilentlyContinue) +
+    (Get-Content -LiteralPath $daemonErrFile -Raw -ErrorAction SilentlyContinue))
+}
+finally {
+  Remove-Item -LiteralPath $daemonOutFile,$daemonErrFile -Force -ErrorAction SilentlyContinue
+}
 $coreVer = $null
 $daemonVer = $null
 if ($coreOut -match 'v(\d+\.\d+\.\d+(?:\.\d+)?)\s+\(([0-9a-fA-F]+)\)') {
@@ -621,22 +796,27 @@ if ($coreOut -match 'v(\d+\.\d+\.\d+(?:\.\d+)?)\s+\(([0-9a-fA-F]+)\)') {
   $coreVer = $Matches[1]
 }
 if ($daemonOut -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
-  $daemonVer = $Matches[1]
+  if ($daemonOut -match '(\d+\.\d+\.\d+(?:\.\d+)?)\+([0-9a-fA-F]+)') {
+    $daemonVer = "$($Matches[1])+$($Matches[2])"
+  } else {
+    $daemonVer = $Matches[1]
+  }
 }
 $guiNum = Get-InstallVersionNumberPart $expectedGui
 $coreNum = Get-InstallVersionNumberPart $coreVer
 $daemonNum = Get-InstallVersionNumberPart $daemonVer
 Write-Host "Installed versions: GUI=$expectedGui core=$coreVer daemon=$daemonVer"
-if ($guiNum -and $coreNum -and $daemonNum -and ($coreNum -ne $guiNum -or $daemonNum -ne $guiNum)) {
-  throw ("Install version skew: GUI=$guiNum core=$coreNum daemon=$daemonNum.`n" +
+if ($expectedGui -and $coreVer -and $daemonVer -and ($coreVer -ne $expectedGui -or $daemonVer -ne $expectedGui)) {
+  throw ("Install version skew: GUI=$expectedGui core=$coreVer daemon=$daemonVer.`n" +
     "Close all Deskflow processes and re-run Install-Remote.ps1 from a fresh portable package.")
 }
-if ($guiNum -and $coreNum -and $daemonNum) {
-  Write-Host "GUI/core/daemon versions match ($guiNum)." -ForegroundColor Green
+if ($expectedGui -and $coreVer -and $daemonVer) {
+  Write-Host "GUI/core/daemon exact versions match ($expectedGui)." -ForegroundColor Green
 }
 
 $user = Get-InteractiveUserName
-$mode = Resolve-DeskflowInstallMode -UserName $user -ForceService:$UseService -ForceDesktop:$Desktop
+$forceDesktopMode = $Desktop -or $NoService
+$mode = Resolve-DeskflowInstallMode -UserName $user -ForceService:$UseService -ForceDesktop:$forceDesktopMode
 $useServiceMode = ($mode -eq 'Service')
 $svc = Get-Service -Name 'Deskflow' -ErrorAction SilentlyContinue
 
@@ -653,8 +833,11 @@ if (-not $NoService) {
   }
   else {
     $scStart = if ($useServiceMode) { 'auto' } else { 'demand' }
-    sc.exe config Deskflow binPath= "`"$daemon`"" start= $scStart | Out-Null
+    sc.exe config Deskflow binPath= "`"$daemon`"" start= $scStart obj= LocalSystem | Out-Null
   }
+  sc.exe description Deskflow "Runs the Core process on secure desktops (UAC prompts, login screen, etc)." | Out-Null
+  sc.exe failure Deskflow reset= 86400 actions= restart/1000/restart/1000/none/0 | Out-Null
+  sc.exe failureflag Deskflow 1 | Out-Null
 }
 
 Write-Host ""
@@ -674,6 +857,19 @@ function Start-DeskflowServiceStack {
   try {
     Start-Service -Name 'Deskflow'
     Write-Host "Deskflow service started (daemon owns core; GUI controls via IPC)." -ForegroundColor Green
+    $serviceConfig = @(Get-DeskflowConfPaths -UserName $user | Where-Object {
+      if (-not (Test-Path -LiteralPath $_)) { return $false }
+      $coreMode = Get-DeskflowIniValue -Path $_ -Section 'core' -Key 'coreMode'
+      return $coreMode -eq '1' -or $coreMode -eq '2'
+    }) | Select-Object -Last 1
+    if ($serviceConfig -and $expectedGui) {
+      $configuredLogLevel = Get-DeskflowIniValue -Path $serviceConfig -Section 'log' -Key 'level'
+      if (-not $configuredLogLevel) { $configuredLogLevel = 'INFO' }
+      Invoke-DeskflowDaemonStart -VersionId $expectedGui -SettingsFile $serviceConfig -LogLevel $configuredLogLevel
+    }
+    else {
+      Write-Host "Service is ready; core start waits for a client/server role to be saved in the GUI." -ForegroundColor Yellow
+    }
   }
   catch {
     Write-Host "Service did not start: $($_.Exception.Message)" -ForegroundColor Yellow
@@ -732,6 +928,8 @@ if (-not $NoStart) {
     Write-Host "deskflow-core is running." -ForegroundColor Green
   }
 }
+
+Install-DeskflowStreamDeckPlugin -InstallPath $InstallPath -InteractiveUserName $user
 
 Write-Host "Install complete." -ForegroundColor Green
 '@
@@ -890,8 +1088,24 @@ Do not run both stacks at once (daemon started while GUI is in Desktop mode) or 
 - ``deskflow.exe`` / ``deskflow-ui.exe`` - Tauri GUI + tray
 - ``deskflow-core.exe`` - server/client core (needs Qt DLLs beside it)
 - ``deskflow-daemon.exe`` - Windows service host
+- ``deskflow-cli.exe`` - pause/resume/toggle/status for Stream Deck and scripts
+- ``StreamDeck\com.deskflow.control.sdPlugin\`` - official Stream Deck plugin (Install-Remote copies it into the Stream Deck user Plugins folder)
 - ``Qt6*.dll`` + ``plugins\`` - Qt runtime for core
 - ``Open-DeskflowFirewall.ps1`` - open inbound TCP 24800 without reinstall
+
+## Stream Deck Pause
+
+Install-Remote sideloads the Deskflow plugin into:
+
+``%AppData%\Elgato\StreamDeck\Plugins\com.deskflow.control.sdPlugin``
+
+(for user ``micha`` when that profile exists, otherwise the interactive user).
+
+After install:
+
+1. Open the Stream Deck software
+2. Drag **Deskflow -> Pause** onto a key
+3. Press the key to toggle pause; the key shows Active vs Paused and stays in sync with the Deskflow GUI
 "@
 
 Set-Content -Path (Join-Path $stageRoot 'README.md') -Value $readme -Encoding UTF8

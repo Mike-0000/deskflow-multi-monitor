@@ -64,26 +64,24 @@ export interface ThemeClasses {
 const darkPro: ThemeClasses = {
   root: "theme-preview w-full h-full min-h-0 overflow-hidden flex flex-col relative font-inter bg-[#030712] text-[#f3f4f6] selection:bg-blue-500/30 selection:text-blue-200",
   header:
-    "flex-none px-4 sm:px-8 py-4 sm:py-6 flex flex-wrap items-center justify-between gap-3 border-b border-white/5 bg-gray-950/50 backdrop-blur-xl z-10 relative",
+    "flex-none px-4 sm:px-8 py-4 sm:py-6 flex flex-wrap items-center justify-between gap-3 border-b border-white/5 bg-gray-950 z-10 relative",
   logoWrap:
     "w-10 h-10 shrink-0 rounded-xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-blue-500/20 ring-1 ring-white/10",
   logoIcon: "text-white",
   title: "text-xl font-semibold tracking-tight text-white",
   subtitle: "text-sm text-gray-400 mt-0.5 hidden sm:block",
   badgeConnected:
-    "flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium backdrop-blur-sm shrink-0",
+    "flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-medium shrink-0",
   badgeRunning:
-    "flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-medium backdrop-blur-sm shrink-0",
+    "flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-blue-500/10 border border-blue-500/20 text-blue-400 text-xs font-medium shrink-0",
   badgeEncrypted:
-    "flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-purple-500/10 border border-purple-500/20 text-purple-400 text-xs font-medium backdrop-blur-sm shrink-0",
-  badgeDotConnected:
-    "w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)] animate-pulse",
+    "flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-purple-500/10 border border-purple-500/20 text-purple-400 text-xs font-medium shrink-0",
+  badgeDotConnected: "w-1.5 h-1.5 rounded-full bg-emerald-400",
   badgeDotRunning: "w-1.5 h-1.5 rounded-full bg-blue-400",
   main: "flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-8 flex flex-col gap-4 sm:gap-6 relative custom-scrollbar",
-  glowA:
-    "absolute top-[-10%] left-[-10%] w-[40%] h-[40%] rounded-full bg-blue-500/5 blur-[120px] pointer-events-none",
-  glowB:
-    "absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] rounded-full bg-emerald-500/5 blur-[120px] pointer-events-none",
+  // Soft static washes — no live Gaussian blur (major GPU cost on WebView2).
+  glowA: "hidden",
+  glowB: "hidden",
   card: "bg-[#0b0f19] border border-white/5 rounded-2xl shadow-xl shadow-black/50 overflow-hidden flex flex-col z-10 relative w-full min-w-0",
   modeRow:
     "p-4 sm:p-6 grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 border-b border-white/5",
@@ -129,7 +127,7 @@ const darkPro: ThemeClasses = {
     "flex items-center gap-2 px-3 sm:px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-sm font-medium rounded-lg transition-all border border-gray-700 disabled:opacity-45 disabled:pointer-events-none",
   layoutCard:
     "flex-1 flex flex-col bg-[#0b0f19] border border-white/5 rounded-2xl shadow-xl shadow-black/50 overflow-hidden z-10 relative min-h-[280px] sm:min-h-[420px] w-full min-w-0",
-  layoutHeader: "border-b border-white/5 bg-gray-900/50 backdrop-blur-md",
+  layoutHeader: "border-b border-white/5 bg-gray-900",
   layoutTitle: "text-lg font-semibold text-white",
   layoutSubtitle: "text-sm text-gray-400 mt-0.5",
   layoutToolbar:
@@ -176,8 +174,7 @@ const lightMod: ThemeClasses = {
     "flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#2A57E8] text-white text-sm font-extrabold shadow-sm shrink-0",
   badgeEncrypted:
     "flex items-center gap-1.5 px-4 py-2 rounded-full bg-[#A02B9A] text-white text-sm font-extrabold shadow-sm shrink-0",
-  badgeDotConnected:
-    "w-1.5 h-1.5 rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)] animate-pulse",
+  badgeDotConnected: "w-1.5 h-1.5 rounded-full bg-white",
   badgeDotRunning: "w-1.5 h-1.5 rounded-full bg-white",
   main: "flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-8 flex flex-col gap-4 sm:gap-6 relative custom-scrollbar",
   glowA: "hidden",
@@ -271,13 +268,11 @@ const cyberpunk: ThemeClasses = {
   badgeEncrypted:
     "flex items-center gap-2 px-3 sm:px-4 py-2 rounded-none bg-[#ff0095] border-4 border-black text-black text-xs font-black uppercase tracking-wider shadow-[4px_4px_0px_#000] shrink-0",
   badgeDotConnected:
-    "w-3 h-3 rounded-none border-2 border-black bg-[#ff0095] animate-pulse",
+    "w-3 h-3 rounded-none border-2 border-black bg-[#ff0095]",
   badgeDotRunning: "w-3 h-3 rounded-none border-2 border-black bg-[#ff5900]",
   main: "flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-8 flex flex-col gap-4 sm:gap-8 relative custom-scrollbar",
-  glowA:
-    "absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-[#ff0095] blur-[150px] pointer-events-none opacity-50",
-  glowB:
-    "absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-[#fbff00] blur-[150px] pointer-events-none opacity-30",
+  glowA: "hidden",
+  glowB: "hidden",
   card: "bg-[#130030] border-4 border-black rounded-none shadow-[12px_12px_0px_#ff0095] overflow-hidden flex flex-col z-10 relative w-full min-w-0",
   modeRow:
     "p-4 sm:p-6 grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6 border-b-4 border-black",
@@ -464,7 +459,7 @@ const monochrome: ThemeClasses = {
     "flex items-center gap-2 px-3 py-1.5 sharp-border text-[#eeeeee] text-xs font-oswald tracking-[0.1em] bg-transparent rounded-none uppercase shrink-0",
   badgeEncrypted:
     "flex items-center gap-2 px-3 py-1.5 sharp-border text-[#eeeeee] text-xs font-oswald tracking-[0.1em] bg-transparent rounded-none uppercase shrink-0",
-  badgeDotConnected: "w-2.5 h-2.5 bg-[#eeeeee] animate-pulse rounded-none",
+  badgeDotConnected: "w-2.5 h-2.5 bg-[#eeeeee] rounded-none",
   badgeDotRunning: "w-2.5 h-2.5 bg-[#eeeeee] rounded-none",
   main: "flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-4 sm:p-8 flex flex-col gap-4 sm:gap-8 relative custom-scrollbar",
   glowA: "hidden",

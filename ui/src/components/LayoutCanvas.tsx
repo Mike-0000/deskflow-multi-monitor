@@ -160,7 +160,7 @@ export function LayoutCanvas({
       <div className="absolute right-4 top-4 z-20 flex gap-1">
         <button
           type="button"
-          className="rounded border border-gray-700 bg-gray-900/80 px-3 py-1.5 text-xs font-medium text-gray-400 shadow-lg backdrop-blur-sm transition-colors hover:bg-gray-800 hover:text-white"
+          className="rounded border border-gray-700 bg-gray-900 px-3 py-1.5 text-xs font-medium text-gray-400 shadow-lg transition-colors hover:bg-gray-800 hover:text-white"
           onClick={fit}
         >
           Fit View
@@ -176,23 +176,7 @@ export function LayoutCanvas({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
       >
-        <defs>
-          <pattern id="grid" width="100" height="100" patternUnits="userSpaceOnUse">
-            <path
-              d="M 100 0 L 0 0 0 100"
-              fill="none"
-              stroke="#1e293b"
-              strokeWidth="2"
-            />
-          </pattern>
-        </defs>
-        <rect
-          x={viewBox.x - viewBox.w}
-          y={viewBox.y - viewBox.h}
-          width={viewBox.w * 3}
-          height={viewBox.h * 3}
-          fill="url(#grid)"
-        />
+        {/* Grid comes from the CSS layoutCanvas background — avoid a huge SVG pattern fill. */}
 
         {edges.map((edge, i) => (
           <line

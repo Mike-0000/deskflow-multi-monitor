@@ -15,6 +15,7 @@
 #include "common/ExitCodes.h"
 #include "deskflow/ClientApp.h"
 #include "deskflow/ServerApp.h"
+#include "deskflow/ipc/CoreIpc.h"
 #include "deskflow/ipc/CoreIpcServer.h"
 
 #if defined(Q_OS_WIN)
@@ -130,9 +131,52 @@ int main(int argc, char **argv)
   QApplication app(argc, argv);
   QApplication::setApplicationName(QStringLiteral("%1 Core").arg(kAppName));
 
+  const bool isServer = parser.serverMode();
   const auto ipcServer = new deskflow::core::ipc::CoreIpcServer(&app); // NOSONAR - Qt managed
   QObject::connect(
       ipcServer, &deskflow::core::ipc::IpcServer::stopProcessRequested, coreApp, &App::quit, Qt::DirectConnection
+  );
+  QObject::connect(
+      ipcServer, &deskflow::core::ipc::CoreIpcServer::pauseSwitchingRequested, coreApp,
+      [coreApp, isServer](bool paused) {
+        // Must run on the core EventQueue thread: setPaused may leave/enter screens
+        // and warp the cursor. Doing that on the Qt IPC thread races the hook/desk
+        // thread and breaks edge switching after pause-from-client.
+        // CLI waits for the async paused= broadcast from Server::setPaused.
+        if (isServer) {
+          auto *events = coreApp->getEvents();
+          events->addEvent(Event(
+              paused ? EventTypes::ServerAppPauseSwitching : EventTypes::ServerAppResumeSwitching,
+              events->getSystemTarget()
+          ));
+        } else {
+          // Client cores ignore pause; still ack state so CLI clients do not hang.
+          ipcSendToClient(QStringLiteral("paused"), QStringLiteral("false"));
+        }
+      },
+      Qt::DirectConnection
+  );
+  QObject::connect(
+      ipcServer, &deskflow::core::ipc::CoreIpcServer::toggleSwitchingRequested, coreApp,
+      [coreApp, isServer]() {
+        if (isServer) {
+          auto *events = coreApp->getEvents();
+          events->addEvent(Event(EventTypes::ServerAppToggleSwitching, events->getSystemTarget()));
+        } else {
+          ipcSendToClient(QStringLiteral("paused"), QStringLiteral("false"));
+        }
+      },
+      Qt::DirectConnection
+  );
+  QObject::connect(
+      ipcServer, &deskflow::core::ipc::CoreIpcServer::pauseStatusRequested, coreApp,
+      [coreApp, isServer](bool *outPaused) {
+        if (outPaused == nullptr) {
+          return;
+        }
+        *outPaused = isServer && static_cast<ServerApp *>(coreApp)->isSwitchingPaused();
+      },
+      Qt::DirectConnection
   );
   ipcServer->listen();
 

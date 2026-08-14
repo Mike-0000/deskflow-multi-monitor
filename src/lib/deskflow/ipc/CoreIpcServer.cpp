@@ -37,6 +37,27 @@ void CoreIpcServer::processCommand(QLocalSocket *clientSocket, const QString &co
     Q_EMIT stopProcessRequested();
     return;
   }
+  if (command == QStringLiteral("pause") || command == QStringLiteral("resume")) {
+    const bool paused = command == QStringLiteral("pause");
+    LOG_DEBUG("core ipc server got %s message", command.toUtf8().constData());
+    writeToClientSocket(clientSocket, QStringLiteral("ok=%1").arg(command));
+    Q_EMIT pauseSwitchingRequested(paused);
+    return;
+  }
+  if (command == QStringLiteral("toggle")) {
+    LOG_DEBUG("core ipc server got toggle message");
+    writeToClientSocket(clientSocket, QStringLiteral("ok=toggle"));
+    Q_EMIT toggleSwitchingRequested();
+    return;
+  }
+  if (command == QStringLiteral("status")) {
+    LOG_DEBUG("core ipc server got status message");
+    bool paused = false;
+    Q_EMIT pauseStatusRequested(&paused);
+    writeToClientSocket(clientSocket, QStringLiteral("ok=status"));
+    writeToClientSocket(clientSocket, QStringLiteral("paused=%1").arg(paused ? QStringLiteral("true") : QStringLiteral("false")));
+    return;
+  }
   LOG_WARN("core ipc server got unknown command: %s", command.toUtf8().constData());
 }
 

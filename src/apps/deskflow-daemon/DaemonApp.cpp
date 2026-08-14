@@ -29,6 +29,8 @@
 
 #include <QCoreApplication>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QSettings>
 
 using namespace deskflow::core;
@@ -123,8 +125,9 @@ void DaemonApp::clearSettings()
   Settings::setValue(Settings::Daemon::LogLevel);
 }
 
-void DaemonApp::connectIpcServer(const ipc::DaemonIpcServer *ipcServer) const
+void DaemonApp::connectIpcServer(ipc::DaemonIpcServer *ipcServer)
 {
+  m_ipcServer = ipcServer;
   // Use direct connection as this object is on it's own thread,
   // and so is on a different event loop to the main Qt loop.
   connect(ipcServer, &ipc::DaemonIpcServer::logLevelChanged, this, &DaemonApp::saveLogLevel, Qt::DirectConnection);
@@ -140,6 +143,37 @@ void DaemonApp::connectIpcServer(const ipc::DaemonIpcServer *ipcServer) const
   connect(
       ipcServer, &ipc::DaemonIpcServer::clearSettingsRequested, this, &DaemonApp::clearSettings, Qt::DirectConnection
   );
+  connect(
+      ipcServer, &ipc::DaemonIpcServer::statusRequested, this,
+      [this](QLocalSocket *clientSocket) { m_ipcServer->sendStatus(clientSocket, statusJson()); }, Qt::DirectConnection
+  );
+}
+
+QString DaemonApp::statusJson() const
+{
+  QJsonObject result;
+  result.insert(QStringLiteral("configFile"), m_configFile);
+
+#if defined(Q_OS_WIN)
+  if (m_pWatchdog != nullptr) {
+    const auto status = m_pWatchdog->status();
+    result.insert(QStringLiteral("state"), QString::fromStdString(status.state));
+    result.insert(QStringLiteral("processId"), static_cast<qint64>(status.processId));
+    result.insert(QStringLiteral("sessionId"), static_cast<qint64>(status.sessionId));
+    result.insert(QStringLiteral("integrityRid"), static_cast<qint64>(status.integrityRid));
+    result.insert(QStringLiteral("elevated"), status.elevated);
+    result.insert(QStringLiteral("uiAccess"), status.uiAccess);
+    result.insert(QStringLiteral("startFailures"), status.startFailures);
+    result.insert(QStringLiteral("lastError"), QString::fromStdString(status.lastError));
+  } else {
+    result.insert(QStringLiteral("state"), QStringLiteral("Unavailable"));
+    result.insert(QStringLiteral("lastError"), QStringLiteral("watchdog not initialized"));
+  }
+#else
+  result.insert(QStringLiteral("state"), QStringLiteral("Unsupported"));
+#endif
+
+  return QString::fromUtf8(QJsonDocument(result).toJson(QJsonDocument::Compact));
 }
 
 void DaemonApp::run(QThread &daemonThread)

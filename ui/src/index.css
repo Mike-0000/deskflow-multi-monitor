@@ -26,3 +26,16 @@ textarea {
   outline: 2px solid #3b82f6;
   outline-offset: 2px;
 }
+
+/* Close-to-tray: stop compositor work while the HWND is hidden. */
+html.ui-suspended,
+html.ui-suspended body,
+html.ui-suspended #root {
+  visibility: hidden !important;
+  content-visibility: hidden;
+}
+
+html.ui-suspended * {
+  animation: none !important;
+  transition: none !important;
+}

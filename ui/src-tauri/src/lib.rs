@@ -2,10 +2,11 @@ mod commands;
 mod config;
 mod daemon;
 mod displays;
-mod ipc;
+pub mod ipc;
 mod process;
 mod tray;
-mod version;
+pub mod version;
+mod window_visibility;
 
 use commands::SharedCore;
 use process::CoreProcess;
@@ -25,10 +26,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            window_visibility::show_main(app);
         }))
         .manage(core.clone())
         .setup(move |app| {
@@ -65,6 +63,7 @@ pub fn run() {
             // Close-to-tray (default on; settings.closeToTray can be wired later for quit)
             if let Some(window) = app.get_webview_window("main") {
                 let window_ref = window.clone();
+                let app_for_close = app.handle().clone();
                 let core_for_close = app.state::<SharedCore>().inner().clone();
                 window.on_window_event(move |event| {
                     if let tauri::WindowEvent::CloseRequested { api, .. } = event {
@@ -74,7 +73,7 @@ pub fn run() {
                             .unwrap_or(true);
                         if close_to_tray {
                             api.prevent_close();
-                            let _ = window_ref.hide();
+                            window_visibility::hide_window(&app_for_close, &window_ref);
                         }
                     }
                 });
@@ -91,6 +90,8 @@ pub fn run() {
             commands::set_server_config,
             commands::core_start,
             commands::core_stop,
+            commands::core_pause,
+            commands::core_resume,
             commands::core_restart,
             commands::trust_fingerprint,
             commands::add_screen,

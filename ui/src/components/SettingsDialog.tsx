@@ -76,16 +76,16 @@ export function SettingsDialog({
           </select>
         </Field>
         <Field
-          label="Process mode"
-          hint="Desktop: the app starts and stops the core. Service: the Windows service owns the core."
+          label="Process mode (advanced)"
+          hint="Service is required on installed Windows to control elevated apps and secure desktops. Desktop is for portable/developer use."
         >
           <select
             className={selectClass}
             value={draft.processMode}
             onChange={(e) => set("processMode", e.target.value as ProcessMode)}
           >
-            <option value="desktop">Desktop (app owns core)</option>
-            <option value="service">Service (daemon owns core)</option>
+            <option value="service">Service (recommended on Windows)</option>
+            <option value="desktop">Desktop (portable/developer only)</option>
           </select>
         </Field>
         <Field label="Protocol">

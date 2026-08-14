@@ -57,6 +57,11 @@
   Deprecated alias for side-by-side: keep Qt deskflow.exe and also copy
   deskflow-ui.exe. Prefer the default Tauri cutover.
 
+.PARAMETER ProcessMode
+  Auto and Service both use the Automatic LocalSystem service for installed
+  Windows builds. Desktop is an explicit portable/developer fallback and
+  cannot inject input into elevated applications.
+
 .PARAMETER WhatIf
   Show planned actions without changing anything.
 
@@ -84,7 +89,9 @@ param(
   [switch] $Force = $true,
   [switch] $UseTauriUi = $true,
   [switch] $BuildTauriUi = $true,
-  [switch] $IncludeTauriUi
+  [switch] $IncludeTauriUi,
+  [ValidateSet('Auto', 'Service', 'Desktop')]
+  [string] $ProcessMode = 'Auto'
 )
 
 Set-StrictMode -Version Latest
@@ -121,27 +128,46 @@ function Test-IsAdmin {
   return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
-function Get-DeskflowVersion([string] $ExePath) {
-  if (-not (Test-Path $ExePath)) {
+function Invoke-VersionProbe([string] $ExePath, [int] $TimeoutMilliseconds = 5000) {
+  if (-not (Test-Path $ExePath)) { return $null }
+
+  $stdout = [System.IO.Path]::GetTempFileName()
+  $stderr = [System.IO.Path]::GetTempFileName()
+  $process = $null
+  try {
+    $process = Start-Process -FilePath $ExePath -ArgumentList '--version' -PassThru -NoNewWindow `
+      -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+      $process.Kill()
+      $process.WaitForExit()
+      return $null
+    }
+    return ((Get-Content -LiteralPath $stdout -Raw -ErrorAction SilentlyContinue) +
+      (Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue))
+  } catch {
     return $null
   }
-
-  # Qt / core binaries print "Deskflow: <ver>"
-  try {
-    $output = & $ExePath --version 2>&1 | Out-String
-    if ($output -match 'Deskflow:\s+(\S+)') {
-      return $Matches[1]
-    }
-  } catch {
-    # Tauri GUI may not support --version; fall through.
+  finally {
+    if ($process) { $process.Dispose() }
+    Remove-Item -LiteralPath $stdout,$stderr -Force -ErrorAction SilentlyContinue
   }
+}
 
-  # File version resource (works for many PE builds)
+function Get-DeskflowVersion([string] $ExePath) {
+  if (-not (Test-Path $ExePath)) { return $null }
+
+  # Prefer the PE version resource. In particular, a Tauri GUI is a Windows GUI
+  # process: invoking it with --version opens the application and never returns.
   try {
     $vi = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($ExePath)
     if ($vi.ProductVersion) { return $vi.ProductVersion }
     if ($vi.FileVersion) { return $vi.FileVersion }
   } catch {}
+
+  $output = Invoke-VersionProbe $ExePath
+  if ($output -match 'Deskflow:\s+(\S+)') {
+    return $Matches[1]
+  }
 
   return $null
 }
@@ -172,8 +198,8 @@ function Get-VersionNumberPart([string] $VersionId) {
 
 function Get-CoreVersionIdFromExe([string] $ExePath) {
   if (-not (Test-Path $ExePath)) { return $null }
-  try {
-    $output = & $ExePath --version 2>&1 | Out-String
+  $output = Invoke-VersionProbe $ExePath
+  if ($output) {
     # deskflow-core.exe v1.26.0.214 (4b4f3dd9), protocol v1.9
     if ($output -match 'v(\d+\.\d+\.\d+(?:\.\d+)?)\s+\(([0-9a-fA-F]+)\)') {
       return "$($Matches[1])+$($Matches[2])"
@@ -181,7 +207,18 @@ function Get-CoreVersionIdFromExe([string] $ExePath) {
     if ($output -match '(\d+\.\d+\.\d+(?:\.\d+)?)') {
       return $Matches[1]
     }
-  } catch {}
+  }
+  return Get-DeskflowVersion $ExePath
+}
+
+function Get-DaemonVersionIdFromExe([string] $ExePath) {
+  if (-not (Test-Path $ExePath)) { return $null }
+  $output = Invoke-VersionProbe $ExePath
+  if ($output) {
+    if ($output -match '(\d+\.\d+\.\d+(?:\.\d+)?)\+([0-9a-fA-F]+)') {
+      return "$($Matches[1])+$($Matches[2])"
+    }
+  }
   return Get-DeskflowVersion $ExePath
 }
 
@@ -199,7 +236,7 @@ function Assert-BinaryVersionAlignment {
   }
 
   $coreId = Get-CoreVersionIdFromExe $CoreExe
-  $daemonId = Get-DeskflowVersion $DaemonExe
+  $daemonId = Get-DaemonVersionIdFromExe $DaemonExe
   $coreNum = Get-VersionNumberPart $coreId
   $daemonNum = Get-VersionNumberPart $daemonId
 
@@ -211,13 +248,13 @@ function Assert-BinaryVersionAlignment {
   $mismatches = @()
   if (-not $coreNum) {
     $mismatches += "could not read version from $CoreExe"
-  } elseif ($coreNum -ne $guiNum) {
-    $mismatches += "core $coreNum != GUI $guiNum"
+  } elseif ($coreId -ne $GuiVersionId) {
+    $mismatches += "core $coreId != GUI $GuiVersionId"
   }
   if (-not $daemonNum) {
     $mismatches += "could not read version from $DaemonExe"
-  } elseif ($daemonNum -ne $guiNum) {
-    $mismatches += "daemon $daemonNum != GUI $guiNum"
+  } elseif ($daemonId -ne $GuiVersionId) {
+    $mismatches += "daemon $daemonId != GUI $GuiVersionId"
   }
 
   if ($mismatches.Count -gt 0) {
@@ -232,7 +269,7 @@ Rebuild C++ and Tauri together (do not use UI-only migrate), then re-run:
 "@
   }
 
-  Write-Host "  GUI/core/daemon versions match ($guiNum)." -ForegroundColor Green
+  Write-Host "  GUI/core/daemon exact versions match ($GuiVersionId)." -ForegroundColor Green
 }
 
 function Find-SettingsFile {
@@ -343,6 +380,134 @@ function Get-InteractiveUserName {
   return $null
 }
 
+function Get-InteractiveUserProfilePath {
+  param([Parameter(Mandatory = $true)][string] $UserName)
+  try {
+    $sid = (New-Object System.Security.Principal.NTAccount($UserName)).Translate(
+      [System.Security.Principal.SecurityIdentifier]
+    ).Value
+    $profile = Get-CimInstance Win32_UserProfile -ErrorAction SilentlyContinue |
+      Where-Object { $_.SID -eq $sid -and $_.LocalPath } |
+      Select-Object -First 1
+    if ($profile) { return $profile.LocalPath }
+  }
+  catch {}
+  return $null
+}
+
+function Set-DeskflowIniValue {
+  param(
+    [Parameter(Mandatory = $true)][string] $Path,
+    [Parameter(Mandatory = $true)][string] $Section,
+    [Parameter(Mandatory = $true)][string] $Key,
+    [Parameter(Mandatory = $true)][string] $Value
+  )
+
+  $dir = Split-Path -Parent $Path
+  if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+  $lines = if (Test-Path $Path) { @(Get-Content -LiteralPath $Path) } else { @() }
+  $currentSection = ''
+  $found = $false
+  $out = New-Object System.Collections.Generic.List[string]
+  foreach ($line in $lines) {
+    if ($line -match '^\s*\[([^\]]+)\]\s*$') {
+      $currentSection = $Matches[1]
+      $out.Add($line)
+      continue
+    }
+    if ($line -match ("^\s*" + [regex]::Escape("$Section/$Key") + "\s*=")) {
+      # Remove the malformed Tauri V2 representation. QSettings expects a
+      # section and leaf key, not a slash-path entry in [General].
+      continue
+    }
+    if ($currentSection -eq $Section -and $line -match ("^\s*" + [regex]::Escape($Key) + "\s*=")) {
+      $out.Add("$Key=$Value")
+      $found = $true
+      continue
+    }
+    $out.Add($line)
+  }
+  if (-not $found) {
+    $out.Add("[$Section]")
+    $out.Add("$Key=$Value")
+  }
+  Set-Content -LiteralPath $Path -Value $out.ToArray() -Encoding UTF8
+}
+
+function Resolve-CanonicalSettingsFile {
+  param([string] $UserName, [string] $ExistingSettingsFile)
+  if ($UserName) {
+    $profile = Get-InteractiveUserProfilePath -UserName $UserName
+    if ($profile) {
+      $canonical = Join-Path $profile 'AppData\Roaming\Deskflow\Deskflow.conf'
+      if (-not (Test-Path $canonical) -and $ExistingSettingsFile -and (Test-Path $ExistingSettingsFile)) {
+        $dir = Split-Path -Parent $canonical
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        Copy-Item -LiteralPath $ExistingSettingsFile -Destination $canonical -Force
+      }
+      return $canonical
+    }
+  }
+  if ($ExistingSettingsFile) { return $ExistingSettingsFile }
+  return (Join-Path $env:ProgramData 'Deskflow\Deskflow.conf')
+}
+
+function Invoke-DeskflowDaemonStart {
+  param(
+    [Parameter(Mandatory = $true)][string] $VersionId,
+    [Parameter(Mandatory = $true)][string] $SettingsFile
+  )
+  $pipe = New-Object System.IO.Pipes.NamedPipeClientStream(
+    '.', 'deskflow-daemon',
+    [System.IO.Pipes.PipeDirection]::InOut,
+    [System.IO.Pipes.PipeOptions]::Asynchronous
+  )
+  $reader = $null
+  $writer = $null
+  $lastStatus = 'no status received'
+  try {
+    $pipe.Connect(10000)
+    $utf8 = [System.Text.UTF8Encoding]::new($false)
+    $reader = New-Object System.IO.StreamReader($pipe, $utf8, $false, 4096, $true)
+    $writer = New-Object System.IO.StreamWriter($pipe, $utf8, 4096, $true)
+    $writer.NewLine = "`n"
+    $writer.AutoFlush = $true
+    $writer.WriteLine("hello=$VersionId")
+    $hello = $reader.ReadLine()
+    if ($hello -ne "hello=$VersionId") { throw "Daemon handshake failed: $hello" }
+
+    foreach ($request in @(
+      @{ Message = "configFile=$SettingsFile"; Ack = 'ok=configFile' },
+      @{ Message = 'start'; Ack = 'ok=start' }
+    )) {
+      $writer.WriteLine($request.Message)
+      $response = $reader.ReadLine()
+      if ($response -ne $request.Ack) { throw "Daemon rejected '$($request.Message)': $response" }
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(25)
+    do {
+      $writer.WriteLine('status')
+      $response = $reader.ReadLine()
+      if ($response -like 'status=*') {
+        $status = $response.Substring(7) | ConvertFrom-Json
+        if ($status.state -eq 'Running' -and [int64]$status.processId -gt 0) {
+          Write-Host "  Core:     service-owned PID $($status.processId), session $($status.sessionId), integrity $($status.integrityRid)"
+          return
+        }
+        $lastStatus = if ($status.lastError) { "$($status.state): $($status.lastError)" } else { [string]$status.state }
+      }
+      Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "Service core did not become ready: $lastStatus"
+  }
+  finally {
+    if ($writer) { $writer.Dispose() }
+    if ($reader) { $reader.Dispose() }
+    $pipe.Dispose()
+  }
+}
+
 function Get-DeskflowGuiProcess {
   Get-Process -Name 'deskflow','deskflow-ui' -ErrorAction SilentlyContinue |
     Where-Object { $_.SessionId -gt 0 -and $_.Path -and ($_.Path -like '*\Deskflow\*') }
@@ -376,37 +541,25 @@ function Start-DeskflowGuiForUser {
   $prevEap = $ErrorActionPreference
   $ErrorActionPreference = 'Continue'
   try {
-    $sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
-
-    if ($sessionId -gt 0) {
-      try {
-        Start-Process -FilePath $GuiPath -WorkingDirectory $workDir | Out-Null
-        Write-Host "Started deskflow.exe in session $sessionId (direct)." -ForegroundColor Cyan
-      }
-      catch {
-        Write-Warn "Direct Start-Process failed: $($_.Exception.Message)"
-      }
+    # This script runs elevated. A direct Start-Process would inherit that token,
+    # defeating the intended split between a limited GUI and service-owned core.
+    $bootstrap = 'DeskflowGuiBootstrap'
+    Unregister-ScheduledTask -TaskName $bootstrap -Confirm:$false -ErrorAction SilentlyContinue
+    $action = New-ScheduledTaskAction -Execute $GuiPath -WorkingDirectory $workDir
+    $principal = New-ScheduledTaskPrincipal -UserId $UserName -LogonType Interactive -RunLevel Limited
+    $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1)
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+    try {
+      Register-ScheduledTask -TaskName $bootstrap -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
+      Start-ScheduledTask -TaskName $bootstrap -ErrorAction SilentlyContinue
+      Write-Host "Started limited deskflow.exe via scheduled task for $UserName." -ForegroundColor Cyan
     }
-
-    if (-not (Get-DeskflowGuiProcess)) {
-      $bootstrap = 'DeskflowGuiBootstrap'
+    catch {
+      Write-Warn "Limited scheduled-task launch failed: $($_.Exception.Message)"
+    }
+    finally {
+      Start-Sleep -Seconds 2
       Unregister-ScheduledTask -TaskName $bootstrap -Confirm:$false -ErrorAction SilentlyContinue
-      $action = New-ScheduledTaskAction -Execute $GuiPath -WorkingDirectory $workDir
-      $principal = New-ScheduledTaskPrincipal -UserId $UserName -LogonType Interactive -RunLevel Limited
-      $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(-1)
-      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
-      try {
-        Register-ScheduledTask -TaskName $bootstrap -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Force | Out-Null
-        Start-ScheduledTask -TaskName $bootstrap -ErrorAction SilentlyContinue
-        Write-Host "Started deskflow.exe via scheduled task for $UserName." -ForegroundColor Cyan
-      }
-      catch {
-        Write-Warn "Scheduled-task launch failed: $($_.Exception.Message)"
-      }
-      finally {
-        Start-Sleep -Seconds 2
-        Unregister-ScheduledTask -TaskName $bootstrap -Confirm:$false -ErrorAction SilentlyContinue
-      }
     }
 
     $guiProc = $null
@@ -460,11 +613,24 @@ function New-Backup([string] $Timestamp) {
     }
   }
 
-  $settingsFile = Find-SettingsFile
-  if ($settingsFile) {
-    $settingsBackup = Join-Path $script:BackupDir 'config'
-    New-Item -ItemType Directory -Path $settingsBackup -Force | Out-Null
-    Copy-Item $settingsFile (Join-Path $settingsBackup 'Deskflow.conf') -Force
+  $settingsBackup = Join-Path $script:BackupDir 'config'
+  $configCandidates = [ordered]@{
+    currentUser = Join-Path $env:APPDATA 'Deskflow\Deskflow.conf'
+    system      = Join-Path $env:ProgramData 'Deskflow\Deskflow.conf'
+    portable    = Join-Path $InstallPath 'settings\Deskflow.conf'
+  }
+  $interactiveUser = Get-InteractiveUserName
+  if ($interactiveUser) {
+    $interactiveProfile = Get-InteractiveUserProfilePath -UserName $interactiveUser
+    if ($interactiveProfile) {
+      $configCandidates.interactiveUser = Join-Path $interactiveProfile 'AppData\Roaming\Deskflow\Deskflow.conf'
+    }
+  }
+  foreach ($entry in $configCandidates.GetEnumerator()) {
+    if (Test-Path -LiteralPath $entry.Value) {
+      New-Item -ItemType Directory -Path $settingsBackup -Force | Out-Null
+      Copy-Item -LiteralPath $entry.Value -Destination (Join-Path $settingsBackup "$($entry.Key)-Deskflow.conf") -Force
+    }
   }
 
   $tlsDir = Join-Path $env:ProgramData 'Deskflow\tls'
@@ -653,22 +819,29 @@ function Prepare-StagingTauri([string] $StagingDir) {
   # Also keep the explicit name for clarity / scripts.
   Copy-Item $tauriSrc (Join-Path $StagingDir 'deskflow-ui.exe') -Force
 
-  $stagedCore = Join-Path $StagingDir 'deskflow-core.exe'
-  $stagedDaemon = Join-Path $StagingDir 'deskflow-daemon.exe'
-  Assert-BinaryVersionAlignment -GuiVersionId $script:NewVersion -CoreExe $stagedCore -DaemonExe $stagedDaemon -Context 'migrate staging'
-
-  $coreVersionId = Get-CoreVersionIdFromExe $stagedCore
-  $daemonVersionId = Get-DeskflowVersion $stagedDaemon
-
-  # Tiny marker so we can tell installs apart later.
-  $marker = [ordered]@{
-    gui           = 'tauri'
-    versionId     = $script:NewVersion
-    coreVersionId = $coreVersionId
-    daemonVersion = $daemonVersionId
-    migratedAt    = (Get-Date).ToString('o')
+  # deskflow-cli: version-locked Core IPC helper used by Stream Deck (and scripts).
+  $cliSrc = Join-Path $script:SourceDir 'deskflow-cli.exe'
+  if (-not (Test-Path $cliSrc)) {
+    $cliSrc = Join-Path $script:RepoRoot 'ui\src-tauri\target\release\deskflow-cli.exe'
   }
-  $marker | ConvertTo-Json | Set-Content (Join-Path $StagingDir 'deskflow-ui.json') -Encoding UTF8
+  if (-not (Test-Path $cliSrc)) {
+    throw "Missing deskflow-cli.exe (expected under build\bin or ui\src-tauri\target\release). Re-run ui\scripts\build-windows.ps1."
+  }
+  Copy-Item $cliSrc (Join-Path $StagingDir 'deskflow-cli.exe') -Force
+
+  # Official Stream Deck plugin (sideloaded by Install-Remote into the interactive user's Plugins folder).
+  $sdPluginName = 'com.deskflow.control.sdPlugin'
+  $sdPluginSrc = Join-Path $script:RepoRoot "streamdeck\$sdPluginName"
+  $sdPluginJs = Join-Path $sdPluginSrc 'bin\plugin.js'
+  if (-not (Test-Path $sdPluginJs)) {
+    throw "Missing Stream Deck plugin at $sdPluginSrc (bin\plugin.js). Build streamdeck/ first (npm run pack)."
+  }
+  $sdDest = Join-Path $StagingDir "StreamDeck\$sdPluginName"
+  New-Item -ItemType Directory -Path (Split-Path $sdDest -Parent) -Force | Out-Null
+  if (Test-Path $sdDest) {
+    Remove-Item $sdDest -Recurse -Force
+  }
+  Copy-Item $sdPluginSrc $sdDest -Recurse -Force
 
   Copy-Licenses $StagingDir
 
@@ -721,7 +894,26 @@ function Prepare-StagingTauri([string] $StagingDir) {
     }
   }
 
-  Write-Host "Staged Tauri GUI as deskflow.exe (+ deskflow-core/daemon + Qt runtime for core)." -ForegroundColor Green
+  # The core and daemon are linked against Qt, so verify executable output only
+  # after their runtime dependencies have been deployed to the staging folder.
+  $stagedCore = Join-Path $StagingDir 'deskflow-core.exe'
+  $stagedDaemon = Join-Path $StagingDir 'deskflow-daemon.exe'
+  Assert-BinaryVersionAlignment -GuiVersionId $script:NewVersion -CoreExe $stagedCore -DaemonExe $stagedDaemon -Context 'migrate staging'
+
+  $coreVersionId = Get-CoreVersionIdFromExe $stagedCore
+  $daemonVersionId = Get-DaemonVersionIdFromExe $stagedDaemon
+
+  # Tiny marker so we can tell installs apart later.
+  $marker = [ordered]@{
+    gui           = 'tauri'
+    versionId     = $script:NewVersion
+    coreVersionId = $coreVersionId
+    daemonVersion = $daemonVersionId
+    migratedAt    = (Get-Date).ToString('o')
+  }
+  $marker | ConvertTo-Json | Set-Content (Join-Path $StagingDir 'deskflow-ui.json') -Encoding UTF8
+
+  Write-Host "Staged Tauri GUI as deskflow.exe (+ deskflow-cli + Stream Deck plugin + deskflow-core/daemon + Qt runtime for core)." -ForegroundColor Green
 }
 
 function Install-StagedRelease([string] $StagingDir) {
@@ -811,6 +1003,7 @@ Write-Host "  GUI mode:       $(if ($script:UseTauriUi) { 'Tauri (cutover)' } el
 Write-Host "  BuildFirst:     $BuildFirst"
 Write-Host "  BuildTauriUi:   $BuildTauriUi"
 Write-Host "  Force:          $Force"
+Write-Host "  Process mode:   $ProcessMode $(if ($ProcessMode -eq 'Auto') { '(installed Windows defaults to Service)' })"
 Write-Host "  Settings:       $(if ($settingsFile) { $settingsFile } else { '(not found)' })"
 Write-Host "  Install path:   $InstallPath"
 Write-Host "  Source build:   $script:SourceDir"
@@ -997,38 +1190,53 @@ try {
   $gui = Join-Path $InstallPath 'deskflow.exe'
   $user = Get-InteractiveUserName
 
-  if ($script:UseTauriUi -and -not $NoStart) {
-    # Tauri default is Desktop mode: GUI owns deskflow-core. Restarting the
-    # Windows service leaves a Session-0 daemon/core the tray is not attached to.
-    $svc = Get-Service -Name 'Deskflow' -ErrorAction SilentlyContinue
-    if ($svc -and $svc.Status -eq 'Running') {
-      if ($PSCmdlet.ShouldProcess('Deskflow service', 'Stop for Desktop-mode Tauri GUI')) {
-        Stop-Service -Name 'Deskflow' -Force -ErrorAction SilentlyContinue
-        sc.exe config Deskflow start= demand | Out-Null
-      }
-      Write-Host "  Service:  stopped (Desktop mode - GUI owns core)"
-    }
-    else {
-      Write-Host "  Service:  left stopped (Desktop mode)"
-    }
+  $desiredMode = if ($ProcessMode -eq 'Desktop') { 'Desktop' } else { 'Service' }
+  $canonicalSettings = Resolve-CanonicalSettingsFile -UserName $user -ExistingSettingsFile $settingsFile
+  Set-DeskflowIniValue -Path $canonicalSettings -Section 'core' -Key 'processMode' -Value $(if ($desiredMode -eq 'Service') { '0' } else { '1' })
+  Set-DeskflowIniValue -Path $canonicalSettings -Section 'gui' -Key 'startCoreWithGui' -Value 'true'
+  if ($desiredMode -eq 'Service') {
+    Set-DeskflowIniValue -Path $canonicalSettings -Section 'daemon' -Key 'elevate' -Value 'true'
+  }
 
-    if ($user) {
-      Start-DeskflowGuiForUser -GuiPath $gui -UserName $user -RegisterLogon
+  $svc = Get-Service -Name 'Deskflow' -ErrorAction SilentlyContinue
+  if ($desiredMode -eq 'Service') {
+    if (-not $svc) {
+      throw 'Deskflow service is missing after migration; repair the installation before launching the GUI.'
+    }
+    if ($PSCmdlet.ShouldProcess('Deskflow service', 'Configure automatic elevated core ownership')) {
+      sc.exe config Deskflow start= auto obj= LocalSystem | Out-Null
+      sc.exe description Deskflow "Runs the Core process on secure desktops (UAC prompts, login screen, etc)." | Out-Null
+      sc.exe failure Deskflow reset= 86400 actions= restart/1000/restart/1000/none/0 | Out-Null
+      sc.exe failureflag Deskflow 1 | Out-Null
+    }
+    if (-not $NoStart) {
+      Start-DeskflowService
+      Write-Host "  Service:  running (service owns elevated core)"
+      if ((Read-DeskflowRole $canonicalSettings) -ne 'Unknown') {
+        Invoke-DeskflowDaemonStart -VersionId $script:NewVersion -SettingsFile $canonicalSettings
+      }
+      else {
+        Write-Host "  Core:     waiting for a client/server role to be saved in the GUI" -ForegroundColor Yellow
+      }
     }
     else {
-      Write-Host "No interactive user logged on; tray GUI not launched." -ForegroundColor Yellow
-      Write-Host "After logon, run: `"$gui`"" -ForegroundColor Yellow
+      Write-Host "  Service:  configured Automatic but left stopped (-NoStart)"
     }
   }
-  elseif ($wasRunning -and -not $NoStart) {
-    Start-DeskflowService
-    Write-Host "  Service:  restarted (legacy Qt / service stack)"
-    if ($user) {
-      Start-DeskflowGuiForUser -GuiPath $gui -UserName $user -RegisterLogon
+  else {
+    if ($svc -and $svc.Status -eq 'Running') {
+      Stop-Service -Name 'Deskflow' -Force -ErrorAction SilentlyContinue
     }
+    sc.exe config Deskflow start= demand | Out-Null
+    Write-Host "  Service:  stopped (explicit Desktop mode)"
   }
-  elseif ($NoStart) {
-    Write-Host "  Service:  left stopped (-NoStart)"
+
+  if (-not $NoStart -and $user) {
+    Start-DeskflowGuiForUser -GuiPath $gui -UserName $user -RegisterLogon
+  }
+  elseif (-not $NoStart) {
+    Write-Host "No interactive user logged on; tray GUI not launched." -ForegroundColor Yellow
+    Write-Host "The Automatic service will start the persisted core after it has received a configuration." -ForegroundColor Yellow
   }
 }
 finally {

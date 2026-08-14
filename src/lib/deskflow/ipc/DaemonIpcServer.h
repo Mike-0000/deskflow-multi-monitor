@@ -21,11 +21,15 @@ class DaemonIpcServer : public IpcServer
 
 public:
   explicit DaemonIpcServer(QObject *parent, const QString &logFilename);
+  void sendStatus(QLocalSocket *clientSocket, const QString &statusJson);
+
+Q_SIGNALS:
+  void statusRequested(QLocalSocket *clientSocket);
 
 private:
   void processCommand(QLocalSocket *clientSocket, const QString &command, const QStringList &parts) override;
-  void processLogLevel(QLocalSocket *&clientSocket, const QStringList &messageParts);
-  void processConfigFile(QLocalSocket *&clientSocket, const QStringList &messageParts);
+  void processLogLevel(QLocalSocket *clientSocket, const QStringList &messageParts);
+  void processConfigFile(QLocalSocket *clientSocket, const QStringList &messageParts);
 
 private:
   const QString m_logFilename;

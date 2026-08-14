@@ -6,6 +6,8 @@
 
 #pragma once
 
+#include <QByteArray>
+#include <QHash>
 #include <QObject>
 #include <QSet>
 
@@ -39,7 +41,7 @@ protected:
    * \param clientSocket The client socket to write to.
    * \param message The message to write (without trailing newline).
    */
-  void writeToClientSocket(QLocalSocket *&clientSocket, const QString &message) const;
+  void writeToClientSocket(QLocalSocket *clientSocket, const QString &message) const;
 
 private:
   void processMessage(QLocalSocket *clientSocket, const QString &message);
@@ -51,8 +53,10 @@ private:
 
   QLocalServer *m_server;
   QSet<QLocalSocket *> m_clients;
+  QSet<QLocalSocket *> m_authenticatedClients;
   /// Clients that failed the version hello; only `stop` is accepted until disconnect.
   QSet<QLocalSocket *> m_mismatchedClients;
+  QHash<QLocalSocket *, QByteArray> m_clientBuffers;
   QString m_serverName;
   QStringList m_pendingMessages;
   QByteArray m_typeName;

@@ -37,6 +37,18 @@ class MSWindowsWatchdog
   };
 
 public:
+  struct Status
+  {
+    std::string state;
+    DWORD processId = 0;
+    DWORD sessionId = 0;
+    DWORD integrityRid = 0;
+    bool elevated = false;
+    bool uiAccess = false;
+    int startFailures = 0;
+    std::string lastError;
+  };
+
   explicit MSWindowsWatchdog(bool foreground, FileLogOutputter &fileLogOutputter);
   ~MSWindowsWatchdog() = default;
 
@@ -59,6 +71,11 @@ public:
    * @return True if the process is running.
    */
   bool isProcessRunning();
+
+  /**
+   * @return A thread-safe snapshot for daemon IPC diagnostics/readiness.
+   */
+  Status status() const;
 
 private:
   /**
@@ -138,13 +155,18 @@ private:
   bool m_elevateProcess = false;
   MSWindowsSession m_session;
   int m_startFailures = 0;
+  std::string m_lastError;
   FileLogOutputter &m_fileLogOutputter;
   bool m_foreground = false;
   std::wstring m_activeDesktop = {};
   std::unique_ptr<deskflow::platform::MSWindowsProcess> m_process;
   std::optional<double> m_nextStartTime = std::nullopt;
+  DWORD m_tokenSessionId = 0;
+  DWORD m_tokenIntegrityRid = 0;
+  bool m_tokenElevated = false;
+  bool m_tokenUiAccess = false;
   ProcessState m_processState = ProcessState::Idle;
   std::wstring m_command = {};
   SendSas m_sendSasFunc = nullptr;
-  std::mutex m_processStateMutex;
+  mutable std::mutex m_processStateMutex;
 };
